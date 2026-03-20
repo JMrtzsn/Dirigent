@@ -14,7 +14,7 @@ from dirigent.nodes.developer import (
     _parse_file_operations,
     developer_node,
 )
-from dirigent.nodes.reviewer import reviewer_node
+from dirigent.nodes.reviewer import _parse_review, reviewer_node
 from dirigent.state import (
     DeveloperResult,
     DeveloperStatus,
@@ -448,7 +448,9 @@ class TestApplyFileOperations:
 # --- Reviewer node tests ---
 
 
-class TestReviewerNode:
+class TestReviewerNodeStub:
+    """Tests for reviewer_node without LLM (heuristic path)."""
+
     def test_selects_best_developer(self) -> None:
         state = GraphState(
             developer_results=[
@@ -486,3 +488,175 @@ class TestReviewerNode:
         )
         result = reviewer_node(state)
         assert result["review"].should_retry is True
+
+
+class TestReviewerNodeLLM:
+    """Tests for reviewer_node with mocked LLM provider."""
+
+    def _make_config(self, response_content: str) -> dict:
+        """Create a RunnableConfig with a mocked provider."""
+        mock_provider = MagicMock(spec=LLMProvider)
+        mock_provider.complete.return_value = CompletionResult(
+            content=response_content,
+            model="claude-sonnet-4.6",
+        )
+        dirigent_config = Config(provider=mock_provider)
+        return {"configurable": {"dirigent_config": dirigent_config}}
+
+    def test_calls_llm_and_parses_verdicts(self) -> None:
+        llm_response = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "developer_id": "dev-0",
+                        "passed_tests": True,
+                        "architectural_alignment": 5,
+                        "diff_size_score": 4,
+                        "notes": "Excellent implementation",
+                    },
+                    {
+                        "developer_id": "dev-1",
+                        "passed_tests": True,
+                        "architectural_alignment": 3,
+                        "diff_size_score": 2,
+                        "notes": "Too many changes",
+                    },
+                ],
+                "selected_developer_id": "dev-0",
+                "recommendation": "dev-0 is better",
+            }
+        )
+        config = self._make_config(llm_response)
+
+        state = GraphState(
+            developer_results=[
+                DeveloperResult(
+                    developer_id="dev-0",
+                    sub_task_id="pr-1",
+                    branch_name="b0",
+                    status=DeveloperStatus.SUCCESS,
+                    diff_stats="+10 -2",
+                    test_output="All passed",
+                ),
+                DeveloperResult(
+                    developer_id="dev-1",
+                    sub_task_id="pr-1",
+                    branch_name="b1",
+                    status=DeveloperStatus.SUCCESS,
+                    diff_stats="+100 -50",
+                    test_output="All passed",
+                ),
+            ]
+        )
+        result = reviewer_node(state, config=config)
+
+        review = result["review"]
+        assert len(review.verdicts) == 2
+        assert review.selected_developer_id == "dev-0"
+        assert review.verdicts[0].architectural_alignment == 5
+
+    def test_falls_back_to_stub_on_llm_error(self) -> None:
+        mock_provider = MagicMock(spec=LLMProvider)
+        mock_provider.complete.side_effect = ProviderError("timeout", provider="copilot")
+        dirigent_config = Config(provider=mock_provider)
+        config = {"configurable": {"dirigent_config": dirigent_config}}
+
+        state = GraphState(
+            developer_results=[
+                DeveloperResult(
+                    developer_id="dev-0",
+                    sub_task_id="pr-1",
+                    branch_name="b0",
+                    status=DeveloperStatus.SUCCESS,
+                ),
+            ]
+        )
+        result = reviewer_node(state, config=config)
+
+        # Should fall back to heuristic
+        assert len(result["review"].verdicts) == 1
+        assert not result["review"].should_retry
+
+    def test_falls_back_on_invalid_json(self) -> None:
+        config = self._make_config("This is garbage, not JSON")
+        state = GraphState(
+            developer_results=[
+                DeveloperResult(
+                    developer_id="dev-0",
+                    sub_task_id="pr-1",
+                    branch_name="b0",
+                    status=DeveloperStatus.SUCCESS,
+                ),
+            ]
+        )
+        result = reviewer_node(state, config=config)
+        assert len(result["review"].verdicts) == 1  # Heuristic fallback
+
+
+class TestParseReview:
+    """Tests for the reviewer JSON parsing logic."""
+
+    def test_valid_json(self) -> None:
+        raw = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "developer_id": "dev-0",
+                        "passed_tests": True,
+                        "architectural_alignment": 4,
+                        "diff_size_score": 5,
+                        "notes": "Good",
+                    }
+                ],
+                "selected_developer_id": "dev-0",
+                "recommendation": "Best option",
+            }
+        )
+        verdicts = _parse_review(raw)
+        assert len(verdicts) == 1
+        assert verdicts[0].developer_id == "dev-0"
+        assert verdicts[0].architectural_alignment == 4
+
+    def test_strips_code_fences(self) -> None:
+        inner = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "developer_id": "dev-0",
+                        "passed_tests": True,
+                        "architectural_alignment": 3,
+                        "diff_size_score": 3,
+                    }
+                ],
+            }
+        )
+        raw = f"```json\n{inner}\n```"
+        verdicts = _parse_review(raw)
+        assert len(verdicts) == 1
+
+    def test_missing_verdicts_key(self) -> None:
+        raw = json.dumps({"no_verdicts_here": True})
+        verdicts = _parse_review(raw)
+        assert verdicts == []
+
+    def test_garbage_returns_empty(self) -> None:
+        verdicts = _parse_review("not json at all!!!")
+        assert verdicts == []
+
+    def test_skips_malformed_items(self) -> None:
+        raw = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "developer_id": "dev-0",
+                        "passed_tests": True,
+                        "architectural_alignment": 4,
+                        "diff_size_score": 5,
+                    },
+                    {"bad": "verdict"},  # Missing developer_id
+                ]
+            }
+        )
+        verdicts = _parse_review(raw)
+        assert len(verdicts) == 1
+        assert verdicts[0].developer_id == "dev-0"
