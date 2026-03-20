@@ -73,28 +73,39 @@ This is "best of N" code generation with git isolation and human oversight.
 
 ```
 Dirigent/
-├── Makefile                # Dev commands: make dev, make test, make lint
-├── pyproject.toml          # Build config, dependencies, tooling
+├── Makefile                    # Dev commands: make dev, make test, make lint, make check
+├── pyproject.toml              # Build config, dependencies, tooling
 ├── README.md
 ├── .gitignore
 │
 ├── src/dirigent/
 │   ├── __init__.py
-│   ├── state.py            # GraphState schema, data classes, reducers
-│   ├── graph.py            # LangGraph StateGraph definition and topology
-│   ├── cli.py              # CLI entry point (`dirigent` command)
+│   ├── state.py                # GraphState, SubTask, DeveloperResult, ReviewResult, reducers
+│   ├── graph.py                # LangGraph StateGraph definition, topology, optional checkpointer
+│   ├── cli.py                  # CLI entry point: SqliteSaver, signal handlers, --db/--no-llm flags
 │   │
 │   ├── nodes/
-│   │   ├── architect.py    # Decomposes objective → list of SubTasks
-│   │   ├── developer.py    # Executes a sub-task (receives input via Send)
-│   │   └── reviewer.py     # Evaluates all developer results, picks best
+│   │   ├── architect.py        # LLM-powered repo analysis → PR plan (JSON parse + stub fallback)
+│   │   ├── developer.py        # LLM code gen in worktrees: file ops, commit, test, cleanup
+│   │   └── reviewer.py         # LLM verdict scoring with heuristic fallback
+│   │
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── provider.py         # LLMProvider protocol, Message, CompletionResult, ProviderError
+│   │   ├── copilot.py          # CopilotProvider: OpenAI SDK + Copilot auth + required headers
+│   │   └── config.py           # Config, Role, ModelConfig, default model assignments
 │   │
 │   └── utils/
-│       └── worktree.py     # Git worktree create/remove/cleanup lifecycle
+│       ├── __init__.py
+│       ├── worktree.py         # Git worktree create/remove/cleanup lifecycle
+│       └── repo.py             # File tree scanning, key file reading, repo context builder
 │
 └── tests/
-    ├── test_state.py       # State construction and reducer logic
-    └── test_nodes.py       # Node input/output contracts
+    ├── test_state.py           # State construction and reducer logic (6 tests)
+    ├── test_llm.py             # Provider protocol, token resolution, CopilotProvider (17 tests)
+    ├── test_nodes.py           # All node tests: architect, developer, reviewer (38 tests)
+    ├── test_repo.py            # File tree scanning, key files, context building (6 tests)
+    └── test_integration.py     # Full graph end-to-end: stub, LLM, human approval (3 tests)
 ```
 
 ## State Flow
@@ -118,19 +129,23 @@ The `developer_results` field uses an `Annotated` custom reducer (`merge_develop
 
 ## Current Status
 
-This is the **v0 skeleton**. All nodes return stubbed data. The graph topology, state management, reducers, and control flow are fully wired and tested.
+All nodes are fully wired with LLM-powered implementations. The system uses GitHub Copilot as its LLM provider (OpenAI-compatible API, $0 under Copilot subscription). Each node falls back to stub behavior on LLM errors, so the graph always completes.
 
 | Component | Status | Description |
 |---|---|---|
 | Graph topology | **Done** | Full `Architect → Fan Out → Fan In → Reviewer → Human → Loop` |
 | State schema | **Done** | Typed dataclasses with LangGraph-compatible reducers |
-| Architect node | **Stub** | Returns hardcoded 3-PR plan |
-| Developer node | **Stub** | Returns fake success result |
-| Reviewer node | **Stub** | Scores developers with predictable numbers |
-| Human gate | **Done** | Uses `interrupt()` — pauses for real input |
+| Architect node | **Done** | LLM-powered repo analysis and PR decomposition with JSON parsing |
+| Developer node | **Done** | LLM code generation in isolated git worktrees, file operations, auto-commit, test execution |
+| Reviewer node | **Done** | LLM-powered verdict scoring with heuristic fallback |
+| Human gate | **Done** | Uses `interrupt()` — pauses for real input, resumes with `Command(resume=)` |
 | Git worktree util | **Done** | Full create/remove/cleanup lifecycle |
-| CLI | **Done** | `dirigent "objective" --repo /path --developers 3` |
-| Tests | **Done** | 11 tests covering state, reducers, and node contracts |
+| Checkpointing | **Done** | SQLite-backed persistence — runs survive crashes |
+| Signal handlers | **Done** | SIGINT/SIGTERM clean up worktrees before exit |
+| LLM provider | **Done** | GitHub Copilot API with auto-token resolution from OpenCode auth cache |
+| Repo context | **Done** | File tree scanning + key file reading for architect context |
+| CLI | **Done** | `dirigent "objective" --repo /path --developers 3 --db path --no-llm` |
+| Tests | **Done** | 72 tests: unit, integration, full graph end-to-end |
 
 ## Quickstart
 
@@ -140,10 +155,31 @@ git clone <repo-url> && cd Dirigent
 make dev        # Creates venv + installs all deps
 
 # Verify
-make check      # Runs lint + tests
+make check      # Runs lint + tests (72 tests)
 
-# Run with stubbed data
-make run        # Runs: dirigent "Refactor the auth module" --verbose
+# Run with stubs (no LLM calls, no API token needed)
+dirigent "Refactor the auth module" --repo /path/to/repo --no-llm
+
+# Run with LLM (requires GitHub Copilot subscription)
+# Token is auto-resolved from OpenCode's auth cache (~/.local/share/opencode/auth.json)
+# or from DIRIGENT_COPILOT_TOKEN env var
+dirigent "Refactor the auth module" --repo /path/to/repo --developers 3 -v
+```
+
+### CLI Options
+
+```
+dirigent <objective> [options]
+
+positional:
+  objective              The high-level task to decompose and implement
+
+options:
+  --repo PATH            Target git repository (default: .)
+  --developers N         Number of parallel developer agents (default: 3)
+  --no-llm               Run with stub nodes (no LLM calls)
+  --db PATH              SQLite checkpoint database (default: .dirigent/checkpoints.db)
+  -v, --verbose          Enable debug logging
 ```
 
 ## Make Targets
@@ -164,26 +200,29 @@ make run        # Runs: dirigent "Refactor the auth module" --verbose
 
 ## Roadmap
 
-### Phase 1: Wire Real LLM Calls
-- [ ] Add LLM provider abstraction (Copilot API / Anthropic / OpenAI)
-- [ ] Replace `_stub_plan()` in architect with LLM-powered repo analysis and decomposition
-- [ ] Replace `_stub_developer_work()` with actual code generation in git worktrees
-- [ ] Replace `_stub_review()` with branch checkout, test execution, and LLM-powered comparison
+### Done
 
-### Phase 2: Robustness
-- [ ] Add SQLite checkpointer so runs survive crashes
-- [ ] Timeout handling for developer nodes
+- [x] LLM provider abstraction (GitHub Copilot API, OpenAI-compatible)
+- [x] Architect node: LLM-powered repo analysis and PR decomposition
+- [x] Developer node: LLM code generation in isolated git worktrees
+- [x] Reviewer node: LLM-powered verdict scoring with heuristic fallback
+- [x] SQLite checkpointer for crash recovery
+- [x] SIGINT/SIGTERM signal handlers for worktree cleanup
+- [x] Full integration tests (stub, LLM, human approval flow)
+
+### Next
+
+- [ ] End-to-end test with real Copilot API calls against a test repo
 - [ ] Retry logic with exponential backoff for LLM calls
-- [ ] Worktree cleanup on process exit (signal handlers)
+- [ ] Timeout handling for developer nodes
+- [ ] Streaming output during LLM calls
 
-### Phase 3: Observability
+### Future
+
 - [ ] LangSmith tracing integration
 - [ ] Structured logging with run IDs
-- [ ] Terminal UI with progress bars for parallel developers
+- [ ] Terminal UI with progress indicators for parallel developers
 - [ ] Cost tracking per run
-
-### Phase 4: Advanced Patterns
-- [ ] Configurable number of developers per sub-task
 - [ ] Developer specialization (different prompts/models per developer)
 - [ ] Reviewer voting (multiple reviewers with consensus)
 - [ ] PR auto-creation via `gh` CLI
@@ -199,8 +238,11 @@ Branches share a working directory. If two agents write to the same file simulta
 **Why "best of N" over single-agent?**
 For well-defined tasks, a single agent is fine. For ambiguous tasks (refactoring, architecture decisions), solution quality varies significantly between runs. Running N agents and selecting the best is a simple way to push the quality frontier without more sophisticated prompting.
 
-**Why stubs first?**
-The hard part isn't calling an LLM — it's the orchestration topology, state management, and control flow. Getting the graph structure right with stubs means we can wire in any LLM provider without touching the core architecture.
+**Why GitHub Copilot API?**
+Free under a Copilot subscription. OpenAI-compatible, so the provider is trivially swappable. Uses `claude-sonnet-4.6` for architect/reviewer (strong reasoning) and `claude-haiku-4.5` for developers (cheap for parallel fan-out).
+
+**Why stubs as fallback?**
+Every node falls back to deterministic stub behavior on LLM errors. This means the graph always completes — useful for testing, CI, and demos without API credentials. The `--no-llm` flag forces stub mode explicitly.
 
 ## License
 
