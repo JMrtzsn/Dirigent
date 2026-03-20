@@ -8,14 +8,18 @@ Architecture:
 
 from __future__ import annotations
 
-from langgraph.constants import Send
+from typing import TYPE_CHECKING
+
 from langgraph.graph import END, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Send, interrupt
 
 from dirigent.nodes.architect import architect_node
 from dirigent.nodes.developer import developer_node
 from dirigent.nodes.reviewer import reviewer_node
 from dirigent.state import GraphState, ReviewResult
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 NUM_DEVELOPERS = 3
 
@@ -91,8 +95,12 @@ def advance_pr(state: GraphState) -> GraphState:
     )
 
 
-def build_graph() -> StateGraph:
+def build_graph(*, checkpointer: BaseCheckpointSaver | None = None) -> StateGraph:
     """Construct the Dirigent orchestration graph.
+
+    Args:
+        checkpointer: Optional checkpoint saver for persistent state.
+            Required for human-in-the-loop interrupt() to survive restarts.
 
     Returns a compiled StateGraph ready for execution.
     """
@@ -131,4 +139,4 @@ def build_graph() -> StateGraph:
     # After advancing PR, fan out again for next task
     builder.add_conditional_edges("advance_pr", fan_out_to_developers)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

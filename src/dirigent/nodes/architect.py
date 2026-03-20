@@ -4,7 +4,10 @@ Calls the LLM with repo context to produce a structured plan.
 Falls back to stub plan if no LLM config is available (for testing).
 """
 
-from __future__ import annotations
+# NOTE: Do NOT use `from __future__ import annotations` in node files.
+# LangGraph introspects the `config: RunnableConfig` parameter type at runtime.
+# With PEP 563 (future annotations), the type becomes a string and LangGraph
+# can't recognize it, so it won't inject the RunnableConfig.
 
 import json
 import logging

@@ -5,7 +5,9 @@ scored verdicts and a selection recommendation.
 Falls back to heuristic scoring if no LLM config is available.
 """
 
-from __future__ import annotations
+# NOTE: Do NOT use `from __future__ import annotations` in node files.
+# LangGraph introspects the `config: RunnableConfig` parameter type at runtime.
+# See architect.py for details.
 
 import json
 import logging
