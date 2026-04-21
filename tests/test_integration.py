@@ -77,8 +77,9 @@ def _make_reviewer_response() -> str:
 class TestFullGraphStub:
     """Integration test: full graph run with stub nodes (no LLM)."""
 
-    def test_graph_runs_to_interrupt(self) -> None:
-        """Graph runs architect → fan-out → developers → reviewer → interrupt."""
+    @patch("dirigent.graph.create_feature_branch", return_value="feature/test")
+    def test_graph_runs_to_interrupt(self, _mock_fb: MagicMock) -> None:
+        """Graph runs architect → setup → fan-out → developers → reviewer → interrupt."""
         checkpointer = MemorySaver()
         graph = build_graph(checkpointer=checkpointer)
 
@@ -88,16 +89,14 @@ class TestFullGraphStub:
         )
         config = {"configurable": {"thread_id": "test-stub"}}
 
-        # Run until interrupt (human_review node)
         events = list(graph.stream(initial_state, config=config, stream_mode="updates"))
 
-        # Should have events for: architect, 3x developer, reviewer
         node_names = [name for event in events for name in event]
         assert "architect" in node_names
+        assert "setup_feature_branch" in node_names
         assert "reviewer" in node_names
         assert node_names.count("developer") == 3
 
-        # Graph should be paused at interrupt
         state = graph.get_state(config)
         assert state.next == ("human_review",)
 
@@ -105,6 +104,7 @@ class TestFullGraphStub:
 class TestFullGraphLLM:
     """Integration test: full graph run with mocked LLM."""
 
+    @patch("dirigent.graph.create_feature_branch", return_value="feature/test")
     @patch("dirigent.nodes.developer._run_tests", return_value="tests passed")
     @patch("dirigent.nodes.developer._commit_changes", return_value="+5 -1")
     @patch("dirigent.nodes.developer._apply_file_operations")
@@ -119,21 +119,20 @@ class TestFullGraphLLM:
         _mock_apply: MagicMock,
         _mock_commit: MagicMock,
         _mock_tests: MagicMock,
+        _mock_fb: MagicMock,
     ) -> None:
         """Full graph with mocked LLM runs to human interrupt."""
-        # Set up worktree mock
         mock_manager = MagicMock()
         mock_wt_cls.return_value = mock_manager
         mock_manager.create.return_value = MagicMock()
 
-        # Set up LLM mock that returns different responses per model
         call_count = {"n": 0}
         responses = [
-            _make_architect_response(),  # Architect call
-            _make_developer_response(),  # Developer 0
-            _make_developer_response(),  # Developer 1
-            _make_developer_response(),  # Developer 2
-            _make_reviewer_response(),  # Reviewer call
+            _make_architect_response(),
+            _make_developer_response(),
+            _make_developer_response(),
+            _make_developer_response(),
+            _make_reviewer_response(),
         ]
 
         def mock_complete(messages, *, model, temperature=0.0, max_tokens=4096):
@@ -167,20 +166,22 @@ class TestFullGraphLLM:
         assert "reviewer" in node_names
         assert node_names.count("developer") == 3
 
-        # Graph paused at interrupt
         state = graph.get_state(config)
         assert state.next == ("human_review",)
 
-        # Verify LLM was called (architect + 3 developers + reviewer = 5)
         assert mock_provider.complete.call_count == 5
 
+    @patch("dirigent.graph.create_draft_pr", return_value="https://github.com/test/pr/1")
+    @patch("dirigent.graph.merge_branch")
+    @patch("dirigent.graph.delete_branch")
+    @patch("dirigent.graph.create_feature_branch", return_value="feature/test")
     @patch("dirigent.nodes.developer._run_tests", return_value="tests passed")
     @patch("dirigent.nodes.developer._commit_changes", return_value="+5 -1")
     @patch("dirigent.nodes.developer._apply_file_operations")
     @patch("dirigent.nodes.developer.WorktreeManager")
     @patch("dirigent.nodes.developer.build_repo_context", return_value="fake context")
     @patch("dirigent.nodes.architect.build_repo_context", return_value="fake context")
-    def test_human_approval_completes_graph(
+    def test_human_approval_merges_and_finalizes(
         self,
         _mock_arch_ctx: MagicMock,
         _mock_dev_ctx: MagicMock,
@@ -188,8 +189,12 @@ class TestFullGraphLLM:
         _mock_apply: MagicMock,
         _mock_commit: MagicMock,
         _mock_tests: MagicMock,
+        _mock_fb: MagicMock,
+        _mock_del: MagicMock,
+        mock_merge: MagicMock,
+        mock_pr: MagicMock,
     ) -> None:
-        """After human approves, graph reaches END (single-PR plan)."""
+        """After human approves, graph merges winner and creates draft PR."""
         mock_manager = MagicMock()
         mock_wt_cls.return_value = mock_manager
         mock_manager.create.return_value = MagicMock()
@@ -232,8 +237,8 @@ class TestFullGraphLLM:
         state = graph.get_state(config)
         assert state.next == ("human_review",)
 
-        # Resume with approval — use Command(resume=) to satisfy the interrupt()
-        list(
+        # Resume with approval
+        events = list(
             graph.stream(
                 Command(resume="yes"),
                 config=config,
@@ -241,6 +246,16 @@ class TestFullGraphLLM:
             )
         )
 
-        # Graph should complete (single PR plan, approved → END)
+        node_names = [name for event in events for name in event]
+        assert "merge_winner" in node_names
+        assert "finalize" in node_names
+
+        # Verify merge was called
+        mock_merge.assert_called_once()
+
+        # Verify draft PR was created
+        mock_pr.assert_called_once()
+
+        # Graph should be complete
         final_state = graph.get_state(config)
-        assert final_state.next == ()  # No more nodes to run
+        assert final_state.next == ()

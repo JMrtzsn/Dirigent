@@ -90,6 +90,9 @@ class GraphState:
     objective: str = ""
     repo_path: str = ""
 
+    # Integration branch
+    feature_branch: str = ""
+
     # Architect output
     plan: list[SubTask] = field(default_factory=list)
     current_pr_index: int = 0

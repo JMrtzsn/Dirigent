@@ -88,6 +88,7 @@ class DeveloperInput:
     sub_task: SubTask
     branch_name: str
     repo_path: str
+    feature_branch: str = ""
 
 
 def developer_node(state: DeveloperInput | dict, config: RunnableConfig | None = None) -> dict:
@@ -111,11 +112,13 @@ def developer_node(state: DeveloperInput | dict, config: RunnableConfig | None =
         sub_task = state["sub_task"]
         branch_name = state["branch_name"]
         repo_path = state.get("repo_path", "")
+        feature_branch = state.get("feature_branch", "")
     else:
         developer_id = state.developer_id
         sub_task = state.sub_task
         branch_name = state.branch_name
         repo_path = state.repo_path
+        feature_branch = state.feature_branch
 
     logger.info(
         "Developer %s starting work on '%s' (branch: %s)",
@@ -130,7 +133,7 @@ def developer_node(state: DeveloperInput | dict, config: RunnableConfig | None =
         result = _stub_developer_work(developer_id, sub_task, branch_name)
     else:
         result = _llm_developer_work(
-            developer_id, sub_task, branch_name, repo_path, dirigent_config
+            developer_id, sub_task, branch_name, repo_path, dirigent_config, feature_branch
         )
 
     logger.info("Developer %s finished with status: %s", developer_id, result.status.value)
@@ -143,13 +146,14 @@ def _llm_developer_work(
     branch_name: str,
     repo_path: str,
     config: Config,
+    feature_branch: str = "",
 ) -> DeveloperResult:
     """Execute a sub-task using LLM + git worktree."""
     manager = WorktreeManager(Path(repo_path))
     worktree: Worktree | None = None
 
     try:
-        worktree = manager.create(branch_name, developer_id)
+        worktree = manager.create(branch_name, developer_id, start_point=feature_branch)
         file_ops = _call_llm_for_code(sub_task, repo_path, config)
         _apply_file_operations(worktree, file_ops)
         diff_stats = _commit_changes(worktree, sub_task)

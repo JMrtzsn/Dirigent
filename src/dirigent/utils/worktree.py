@@ -63,10 +63,16 @@ class WorktreeManager:
             logger.error("git %s failed: %s", " ".join(args), result.stderr.strip())
         return result
 
-    def create(self, branch: str, developer_id: str) -> Worktree:
+    def create(self, branch: str, developer_id: str, start_point: str = "") -> Worktree:
         """Create a new worktree for a developer on the given branch.
 
         The worktree is placed in a `.worktrees/` directory alongside the repo.
+
+        Args:
+            branch: Branch name to create in the worktree.
+            developer_id: Unique ID for this developer (used for directory name).
+            start_point: Git ref to branch from (e.g. feature branch name).
+                If empty, branches from HEAD.
         """
         worktree_dir = self.repo_path.parent / ".worktrees" / developer_id
         worktree_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +82,10 @@ class WorktreeManager:
             self._git("worktree", "remove", str(worktree_dir), "--force")
 
         # Create new branch and worktree
-        result = self._git("worktree", "add", "-b", branch, str(worktree_dir))
+        cmd = ["worktree", "add", "-b", branch, str(worktree_dir)]
+        if start_point:
+            cmd.append(start_point)
+        result = self._git(*cmd)
         if result.returncode != 0:
             # Branch might already exist — try without -b
             result = self._git("worktree", "add", str(worktree_dir), branch)

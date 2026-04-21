@@ -274,7 +274,7 @@ class TestDeveloperNode:
         assert dev_result.test_output == "tests passed"
 
         # Verify worktree lifecycle
-        mock_manager.create.assert_called_once_with("feat/foo/dev-0", "dev-0")
+        mock_manager.create.assert_called_once_with("feat/foo/dev-0", "dev-0", start_point="")
         mock_manager.remove.assert_called_once_with(mock_worktree)
 
     @patch("dirigent.nodes.developer.build_repo_context", return_value="fake")
