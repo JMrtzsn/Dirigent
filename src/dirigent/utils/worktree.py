@@ -96,6 +96,14 @@ class WorktreeManager:
 
         wt = Worktree(path=worktree_dir, branch=branch, repo_path=self.repo_path)
         self._worktrees[developer_id] = wt
+
+        # Symlink the main repo's .venv so tools (ruff, pytest) are available
+        main_venv = self.repo_path / ".venv"
+        wt_venv = worktree_dir / ".venv"
+        if main_venv.is_dir() and not wt_venv.exists():
+            wt_venv.symlink_to(main_venv)
+            logger.debug("Symlinked .venv into worktree %s", worktree_dir)
+
         logger.info(
             "Created worktree for %s at %s (branch: %s)", developer_id, worktree_dir, branch
         )
