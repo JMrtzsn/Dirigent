@@ -1,65 +1,33 @@
-"""LLM provider protocol — the contract all providers must satisfy."""
+"""LLM provider protocol.
+
+Defines the minimal interface any LLM backend must satisfy.
+Keeps the framework decoupled from specific SDKs.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol
 
 
-@dataclass
-class Message:
-    """A single message in a conversation."""
-
-    role: str  # "system", "user", "assistant"
-    content: str
-
-
-@dataclass
-class CompletionResult:
-    """Response from an LLM completion call."""
+@dataclass(frozen=True, slots=True)
+class LLMResponse:
+    """Structured response from an LLM call."""
 
     content: str
-    model: str
+    model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    raw: Any = None
 
 
-@runtime_checkable
 class LLMProvider(Protocol):
-    """Protocol that all LLM providers must implement.
+    """Protocol for LLM backends."""
 
-    Kept minimal on purpose — one method, no streaming (yet).
-    Streaming can be added as a separate method when needed.
-    """
-
-    def complete(
+    async def complete(
         self,
-        messages: list[Message],
+        messages: list[dict[str, str]],
         *,
-        model: str,
+        model: str = "",
         temperature: float = 0.0,
         max_tokens: int = 4096,
-    ) -> CompletionResult:
-        """Send messages to an LLM and return the response.
-
-        Args:
-            messages: Conversation history.
-            model: Model identifier (e.g. "claude-sonnet-4.6").
-            temperature: Sampling temperature. 0.0 = deterministic.
-            max_tokens: Maximum tokens in the response.
-
-        Returns:
-            CompletionResult with the model's response.
-
-        Raises:
-            ProviderError: If the API call fails.
-        """
-        ...
-
-
-class ProviderError(Exception):
-    """Raised when an LLM provider call fails."""
-
-    def __init__(self, message: str, *, provider: str, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.provider = provider
-        self.status_code = status_code
+    ) -> LLMResponse: ...

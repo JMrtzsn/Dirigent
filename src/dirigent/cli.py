@@ -3,31 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import signal
 import sys
-import warnings
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
-from dirigent.graph import build_graph
-from dirigent.llm.config import Config
-from dirigent.state import GraphState
-from dirigent.utils import display
+from dirigent.orchestrator import Orchestrator, OrchestratorConfig
 from dirigent.utils.worktree import WorktreeManager
 
 logger = logging.getLogger(__name__)
-
-# Nodes that produce phase transitions worth labeling
-_PHASE_LABELS = {
-    "architect": "Planning",
-    "setup_feature_branch": "Setup",
-    "reviewer": "Review",
-    "human_review": "Human Review",
-    "merge_winner": "Merge",
-    "finalize": "Finalize",
-}
 
 
 def _register_signal_handlers(repo_path: str) -> None:
@@ -36,7 +21,7 @@ def _register_signal_handlers(repo_path: str) -> None:
 
     def _handle_signal(signum: int, _frame: object) -> None:
         sig_name = signal.Signals(signum).name
-        display.error(f"Received {sig_name}, cleaning up worktrees...")
+        print(f"\n[dirigent] Received {sig_name}, cleaning up worktrees...", file=sys.stderr)
         manager.cleanup_all()
         sys.exit(128 + signum)
 
@@ -44,12 +29,25 @@ def _register_signal_handlers(repo_path: str) -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
 
-def main() -> None:
-    warnings.filterwarnings("ignore", message=".*Pydantic V1.*")
+async def _human_review(summary: str) -> bool:
+    """Prompt the user for approval (blocking input in a thread)."""
+    loop = asyncio.get_running_loop()
 
+    def _ask() -> bool:
+        print(f"\n{'=' * 60}", file=sys.stderr)
+        print("HUMAN REVIEW", file=sys.stderr)
+        print(f"{'=' * 60}", file=sys.stderr)
+        print(summary, file=sys.stderr)
+        response = input("\nApprove? [y/N]: ").strip().lower()
+        return response in ("y", "yes")
+
+    return await loop.run_in_executor(None, _ask)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dirigent",
-        description="Fan-out/fan-in AI agent orchestrator",
+        description="Agent-to-agent interaction framework — SLIB orchestrator",
     )
     parser.add_argument(
         "objective",
@@ -75,59 +73,39 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
+        level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    _register_signal_handlers(args.repo)
+    repo_path = str(Path(args.repo).resolve())
+    _register_signal_handlers(repo_path)
 
-    checkpointer = MemorySaver()
-    graph = build_graph(checkpointer=checkpointer)
-
-    initial_state = GraphState(
+    config = OrchestratorConfig(
+        repo_path=repo_path,
         objective=args.objective,
-        repo_path=args.repo,
+        num_developers=args.developers,
+        human_approve_callback=_human_review,
     )
 
-    display.banner(args.objective, args.repo, args.developers)
+    orchestrator = Orchestrator(config)
+
+    print(f"[dirigent] Objective: {args.objective}", file=sys.stderr)
+    print(f"[dirigent] Repo: {repo_path}", file=sys.stderr)
+    print(f"[dirigent] Developers: {args.developers}", file=sys.stderr)
+    print(file=sys.stderr)
 
     try:
-        dirigent_config = Config()
-    except Exception:
-        display.error("Failed to initialize LLM provider")
-        logger.debug("LLM init failure", exc_info=True)
-        sys.exit(1)
-
-    config = {
-        "configurable": {
-            "thread_id": "dirigent-main",
-            "dirigent_config": dirigent_config,
-        }
-    }
-
-    last_phase: str | None = None
-    try:
-        for event in graph.stream(initial_state, config=config, stream_mode="updates"):
-            for node_name, update in event.items():
-                # Print phase separator on phase transitions
-                phase = _PHASE_LABELS.get(node_name)
-                if phase and phase != last_phase and node_name != "reviewer":
-                    display.phase_separator(phase)
-                    last_phase = phase
-
-                # Print the review table before the reviewer checkmark
-                if node_name == "reviewer":
-                    display.phase_separator("Review")
-                    last_phase = "Review"
-                    display.review_table(update)
-
-                display.node_event(node_name, update)
+        pr_url = asyncio.run(orchestrator.run())
     except KeyboardInterrupt:
-        display.error("Interrupted by user")
+        print("\n[dirigent] Interrupted", file=sys.stderr)
         sys.exit(1)
 
-    display.done()
+    if pr_url:
+        print(f"\n[dirigent] Draft PR: {pr_url}", file=sys.stderr)
+    else:
+        print("\n[dirigent] Pipeline failed — see logs above", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
