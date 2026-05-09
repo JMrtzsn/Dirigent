@@ -1,5 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
+import fs from "fs"
 
 const DIRIGENT_BIN = path.join(
   import.meta.dir,
@@ -8,6 +9,28 @@ const DIRIGENT_BIN = path.join(
   "bin",
   "dirigent",
 )
+
+const GO_DIR = path.join(import.meta.dir, "..", "..", "go")
+
+async function ensureBinary(): Promise<string> {
+  if (fs.existsSync(DIRIGENT_BIN)) {
+    return DIRIGENT_BIN
+  }
+  // Auto-build if Go source exists
+  if (fs.existsSync(path.join(GO_DIR, "go.mod"))) {
+    const binDir = path.dirname(DIRIGENT_BIN)
+    if (!fs.existsSync(binDir)) {
+      fs.mkdirSync(binDir, { recursive: true })
+    }
+    await Bun.$`cd ${GO_DIR} && go build -o ${DIRIGENT_BIN} ./cmd/dirigent`
+    if (fs.existsSync(DIRIGENT_BIN)) {
+      return DIRIGENT_BIN
+    }
+  }
+  throw new Error(
+    `Dirigent binary not found at ${DIRIGENT_BIN}. Run 'make build' from the project root.`,
+  )
+}
 
 export const init = tool({
   description:
@@ -18,8 +41,8 @@ export const init = tool({
       .describe("The high-level objective to decompose and build"),
   },
   async execute(args) {
-    const result =
-      await Bun.$`${DIRIGENT_BIN} init ${args.objective}`.text()
+    const bin = await ensureBinary()
+    const result = await Bun.$`${bin} init ${args.objective}`.text()
     return result.trim()
   },
 })
@@ -35,8 +58,8 @@ export const plan = tool({
       ),
   },
   async execute(args) {
-    const result =
-      await Bun.$`${DIRIGENT_BIN} plan ${args.plan}`.text()
+    const bin = await ensureBinary()
+    const result = await Bun.$`${bin} plan ${args.plan}`.text()
     return result.trim()
   },
 })
@@ -51,11 +74,9 @@ export const status = tool({
       .describe("Optional task ID to get status for a specific task"),
   },
   async execute(args) {
-    const cmdArgs = args.taskId
-      ? [args.taskId]
-      : []
-    const result =
-      await Bun.$`${DIRIGENT_BIN} status ${cmdArgs}`.text()
+    const bin = await ensureBinary()
+    const cmdArgs = args.taskId ? [args.taskId] : []
+    const result = await Bun.$`${bin} status ${cmdArgs}`.text()
     return result.trim()
   },
 })
@@ -72,8 +93,9 @@ export const update = tool({
       ),
   },
   async execute(args) {
+    const bin = await ensureBinary()
     const result =
-      await Bun.$`${DIRIGENT_BIN} update ${args.taskId} ${args.update}`.text()
+      await Bun.$`${bin} update ${args.taskId} ${args.update}`.text()
     return result.trim()
   },
 })
@@ -90,11 +112,31 @@ export const contracts = tool({
       ),
   },
   async execute(args) {
-    const cmdArgs = args.contract
-      ? [args.contract]
-      : []
-    const result =
-      await Bun.$`${DIRIGENT_BIN} contracts ${cmdArgs}`.text()
+    const bin = await ensureBinary()
+    const cmdArgs = args.contract ? [args.contract] : []
+    const result = await Bun.$`${bin} contracts ${cmdArgs}`.text()
+    return result.trim()
+  },
+})
+
+export const ready = tool({
+  description:
+    "List tasks whose dependencies are all completed and are ready to be started. Use this to determine which tasks to fan out next.",
+  args: {},
+  async execute() {
+    const bin = await ensureBinary()
+    const result = await Bun.$`${bin} ready`.text()
+    return result.trim()
+  },
+})
+
+export const cleanup = tool({
+  description:
+    "Remove the Dirigent session file after the coordination is complete.",
+  args: {},
+  async execute() {
+    const bin = await ensureBinary()
+    const result = await Bun.$`${bin} cleanup`.text()
     return result.trim()
   },
 })

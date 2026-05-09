@@ -8,68 +8,90 @@ You are now acting as the Dirigent orchestrator. The user wants to build a featu
 
 **Objective:** $ARGUMENTS
 
+Load the `dirigent` skill first to understand the full coordination protocol.
+
 Follow this protocol:
 
-## Step 1: Analyze and Decompose
+## Step 1: Analyze the Codebase
 
-Analyze the objective and the codebase. Decompose it into parallel tasks that can be worked on by independent agents. Consider:
-- Which tasks can run in parallel vs which have dependencies
-- What shared interfaces/contracts need to be agreed on upfront
-- What files each task will likely touch (to avoid conflicts)
+Before decomposing, understand the codebase:
+- Read key files (README, config files, entry points) to understand the project structure
+- Identify the language, framework, and patterns in use
+- Understand how the existing code is organized (modules, packages, etc.)
 
-## Step 2: Initialize Session
+## Step 2: Decompose into Tasks
 
-Use the dirigent tool to initialize a coordination session:
+Based on your codebase analysis, decompose the objective into parallel tasks. For each task, define:
+- A clear boundary (which files/modules it owns)
+- What interfaces it exposes or consumes
+- Dependencies on other tasks
+- Maximize parallelism — prefer more independent tasks over fewer dependent ones
+
+## Step 3: Initialize Session
+
 ```
-dirigent init "$ARGUMENTS"
-```
-
-## Step 3: Store the Plan
-
-Create a plan as JSON with this structure and store it:
-```json
-{
-  "tasks": [
-    {
-      "id": "unique-id",
-      "title": "Short title",
-      "description": "Detailed description of what to build",
-      "depends_on": ["other-task-id"],
-      "interfaces": ["SharedInterface"]
-    }
-  ],
-  "shared_contracts": ["Interface definitions that multiple tasks need"],
-  "execution_order": ["task-ids in topological order"]
-}
+dirigent_init(objective: "$ARGUMENTS")
 ```
 
-Store it with: `dirigent plan '<json>'`
+## Step 4: Store the Plan
 
-## Step 4: Define Contracts
-
-For each shared interface, register it:
+Create the plan JSON and store it:
 ```
-dirigent contracts '{"name": "InterfaceName", "owner": "task-id", "description": "what it does", "definition": "the actual interface/type definition"}'
+dirigent_plan(plan: '{"tasks":[...],"shared_contracts":[...],"execution_order":[...]}')
 ```
 
-## Step 5: Fan Out
+Each task needs: `id`, `title`, `description`, `depends_on` (array of task IDs), `interfaces` (array of interface names it exposes).
 
-For each task that has no unmet dependencies, spawn a Task sub-agent with these instructions:
-- The task description
-- All relevant shared contracts
-- Which files it should modify (and which it must NOT touch)
-- Instructions to call `dirigent update <task-id> '{"status": "in_progress"}'` when starting
-- Instructions to call `dirigent update <task-id> '{"status": "completed", "result": "summary", "files_modified": [...], "interfaces": [...]}'` when done
-- Instructions to call `dirigent status` to check on sibling tasks if needed
+## Step 5: Define Contracts
 
-Launch independent tasks in parallel using the Task tool.
+For each shared interface between tasks, register it:
+```
+dirigent_contracts(contract: '{"name":"InterfaceName","owner":"task-id","description":"...","definition":"the actual type/interface definition"}')
+```
 
-## Step 6: Collect and Merge
+Define ALL contracts BEFORE spawning any agents. This is critical — agents need to know the contracts upfront.
 
-After all tasks complete:
-1. Check `dirigent status` to verify all tasks are completed
-2. Review the combined changes for consistency
-3. Ensure shared contracts are satisfied
-4. Create a single coherent commit or set of commits
+## Step 6: Fan Out (Dependency-Aware)
 
-Present a summary to the user.
+Use `dirigent_ready` to get tasks that can start now (all dependencies met):
+```
+dirigent_ready()
+```
+
+For each ready task, spawn a Task sub-agent with these instructions:
+
+1. Your task: [task title and full description]
+2. Files you own: [list of files this task should create/modify]
+3. Files you must NOT touch: [files owned by other tasks]
+4. Shared contracts you must implement: [relevant contract definitions]
+5. Shared contracts you consume: [interfaces you depend on]
+6. When you start, call: `dirigent_update(taskId: "<id>", update: '{"status":"in_progress"}')`
+7. When you finish, call: `dirigent_update(taskId: "<id>", update: '{"status":"completed","result":"<summary>","files_modified":[...],"interfaces":[...]}')`
+8. If you need to check what other agents are doing: `dirigent_status()`
+9. If you need to see shared contracts: `dirigent_contracts()`
+
+Launch all ready tasks in parallel using the Task tool.
+
+## Step 7: Handle Dependencies
+
+After the first batch completes, check for newly ready tasks:
+```
+dirigent_ready()
+```
+
+If there are more ready tasks, spawn them. Repeat until all tasks are done.
+
+## Step 8: Collect and Verify
+
+1. Call `dirigent_status()` to verify all tasks completed
+2. Review the combined changes:
+   - Do shared contracts match between producer and consumer?
+   - Are there any file conflicts?
+   - Does the code compile / pass tests?
+3. Fix any integration issues
+
+## Step 9: Finalize
+
+1. Run the project's build/test commands to verify everything works
+2. Present a summary to the user with what was built
+3. Call `dirigent_cleanup()` to remove the session file

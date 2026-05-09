@@ -1,4 +1,4 @@
-.PHONY: install dev lint test clean run help
+.PHONY: install dev lint test clean run help build go-test go-lint check-all
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -39,5 +39,18 @@ run: ## Run Dirigent with a sample objective
 	$(PYTHON) -m dirigent.cli "Refactor the auth module" --verbose
 
 clean: ## Remove build artifacts and venv
-	rm -rf $(VENV) dist/ build/ *.egg-info .pytest_cache .ruff_cache
+	rm -rf $(VENV) dist/ build/ *.egg-info .pytest_cache .ruff_cache bin/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# --- Go targets ---
+
+build: ## Build the dirigent Go binary
+	cd go && go build -o ../bin/dirigent ./cmd/dirigent
+
+go-test: ## Run Go test suite
+	cd go && go test ./...
+
+go-lint: ## Run Go vet
+	cd go && go vet ./...
+
+check-all: check build go-test go-lint ## Run all checks (Python + Go)

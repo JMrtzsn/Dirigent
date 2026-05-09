@@ -100,6 +100,11 @@ func Load() (*Session, error) {
 	return &s, nil
 }
 
+// SessionFilePath returns the path to the session file.
+func SessionFilePath() string {
+	return sessionPath()
+}
+
 func sessionPath() string {
 	// Look for .dirigent-session.json in current directory
 	// or walk up to find a git root

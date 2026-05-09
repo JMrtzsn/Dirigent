@@ -26,6 +26,8 @@ Commands:
   status      Query task or session status
   update      Update a task's status and artifacts
   contracts   Manage shared interface contracts
+  ready       List tasks whose dependencies are all completed
+  cleanup     Remove the session file
 
 All output is JSON for machine consumption.`)
 	os.Exit(1)
@@ -48,6 +50,10 @@ func main() {
 		err = cmdUpdate(os.Args[2:])
 	case "contracts":
 		err = cmdContracts(os.Args[2:])
+	case "ready":
+		err = cmdReady()
+	case "cleanup":
+		err = cmdCleanup()
 	default:
 		usage()
 	}
@@ -202,4 +208,51 @@ func jsonOut(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// cmdReady returns tasks whose dependencies are all completed and that are still pending.
+func cmdReady() error {
+	session, err := state.Load()
+	if err != nil {
+		return fmt.Errorf("loading session: %w", err)
+	}
+	if session.Plan == nil {
+		return fmt.Errorf("no plan exists yet")
+	}
+
+	// Build status lookup
+	statusMap := map[string]state.TaskStatus{}
+	for _, t := range session.Plan.Tasks {
+		statusMap[t.ID] = t.Status
+	}
+
+	var ready []state.Task
+	for _, t := range session.Plan.Tasks {
+		if t.Status != state.StatusPending {
+			continue
+		}
+		allMet := true
+		for _, dep := range t.DependsOn {
+			if statusMap[dep] != state.StatusCompleted {
+				allMet = false
+				break
+			}
+		}
+		if allMet {
+			ready = append(ready, t)
+		}
+	}
+
+	return jsonOut(ready)
+}
+
+// cmdCleanup removes the session file.
+func cmdCleanup() error {
+	if err := os.Remove(state.SessionFilePath()); err != nil {
+		if os.IsNotExist(err) {
+			return jsonOut(map[string]string{"status": "no session to clean up"})
+		}
+		return fmt.Errorf("removing session: %w", err)
+	}
+	return jsonOut(map[string]string{"status": "cleaned up"})
 }
