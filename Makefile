@@ -46,6 +46,7 @@ clean: ## Remove build artifacts and venv
 
 build: ## Build the dirigent Go binary
 	cd go && go build -o ../bin/dirigent ./cmd/dirigent
+	cd go && go build -o ../plugin/bin/dirigent ./cmd/dirigent
 
 go-test: ## Run Go test suite
 	cd go && go test ./...

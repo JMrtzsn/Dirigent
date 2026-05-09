@@ -15,4 +15,5 @@ venv/
 .dirigent/
 .worktrees/
 bin/
+plugin/bin/
 .dirigent-session.json

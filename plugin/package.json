@@ -1,0 +1,29 @@
+{
+  "name": "opencode-dirigent",
+  "version": "0.1.0",
+  "description": "Parallel agent coordination for OpenCode — decompose features into tasks, fan out to sub-agents, coordinate via shared contracts",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "build:go": "cd ../go && go build -o ../plugin/bin/dirigent ./cmd/dirigent",
+    "postinstall": "node scripts/install-binary.mjs"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "agent",
+    "orchestration",
+    "parallel",
+    "coordination"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "scripts/",
+    "commands/"
+  ]
+}
