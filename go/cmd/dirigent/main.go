@@ -44,6 +44,7 @@ func main() {
 	rootCmd.AddCommand(mergeCmd())
 	rootCmd.AddCommand(listWorktreesCmd())
 	rootCmd.AddCommand(verifyCmd())
+	rootCmd.AddCommand(reviewCmd())
 	rootCmd.AddCommand(diffCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -651,6 +652,62 @@ func listWorktreesCmd() *cobra.Command {
 				return jsonOut([]any{})
 			}
 			return jsonOut(entries)
+		},
+	}
+}
+
+func reviewCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "review <task-id>",
+		Short: "Show task details and open worktree in a new terminal tab",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			var task *state.Task
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					task = &session.Plan.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+			if task.Branch == "" {
+				return fmt.Errorf("task '%s' has no branch/worktree", taskID)
+			}
+
+			repoRoot, _ := gitRun("rev-parse", "--show-toplevel")
+			repoRoot = strings.TrimSpace(repoRoot)
+			worktreePath := fmt.Sprintf("%s/.dirigent-worktrees/%s", repoRoot, taskID)
+
+			// Get diff stat
+			base := session.BaseBranch
+			stat, _ := gitRun("diff", "--stat", fmt.Sprintf("%s...%s", base, task.Branch))
+
+			fmt.Printf("Task:     %s\n", task.Title)
+			fmt.Printf("Status:   %s\n", task.Status)
+			fmt.Printf("Branch:   %s\n", task.Branch)
+			fmt.Printf("Worktree: %s\n", worktreePath)
+			fmt.Printf("\n--- Changes ---\n%s\n", strings.TrimSpace(stat))
+			fmt.Printf("\nTo review:\n  cd %s\n", worktreePath)
+
+			// Try to open worktree in Finder/Terminal (macOS)
+			openCmd := exec.Command("open", worktreePath)
+			if err := openCmd.Run(); err == nil {
+				fmt.Printf("\n(Opened in Finder)\n")
+			}
+
+			return nil
 		},
 	}
 }
