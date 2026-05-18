@@ -43,6 +43,7 @@ func main() {
 	rootCmd.AddCommand(checkoutCmd())
 	rootCmd.AddCommand(mergeCmd())
 	rootCmd.AddCommand(listWorktreesCmd())
+	rootCmd.AddCommand(verifyCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -52,18 +53,22 @@ func main() {
 }
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var requireVerification bool
+	cmd := &cobra.Command{
 		Use:   "init <objective>",
 		Short: "Initialize a new coordination session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := state.NewSession(args[0])
+			session.RequireVerification = requireVerification
 			if err := state.Save(session); err != nil {
 				return fmt.Errorf("saving session: %w", err)
 			}
 			return jsonOut(session)
 		},
 	}
+	cmd.Flags().BoolVar(&requireVerification, "require-verification", false, "require human verification before merge")
+	return cmd
 }
 
 func planCmd() *cobra.Command {
@@ -395,8 +400,14 @@ func mergeCmd() *cobra.Command {
 			if task.Branch == "" {
 				return fmt.Errorf("task '%s' has no branch", taskID)
 			}
-			if task.Status != state.StatusCompleted {
-				return fmt.Errorf("task '%s' is not completed (status: %s)", taskID, task.Status)
+			if session.RequireVerification {
+				if task.Status != state.StatusVerified {
+					return fmt.Errorf("task '%s' requires verification before merge (status: %s) — run: dirigent verify %s", taskID, task.Status, taskID)
+				}
+			} else {
+				if task.Status != state.StatusCompleted && task.Status != state.StatusVerified {
+					return fmt.Errorf("task '%s' is not completed (status: %s)", taskID, task.Status)
+				}
 			}
 
 			base := session.BaseBranch
@@ -449,6 +460,49 @@ func jsonOut(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+func verifyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "verify <task-id>",
+		Short: "Mark a completed task as human-verified (unlocks merge)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			var task *state.Task
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					task = &session.Plan.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+			if task.Status != state.StatusCompleted {
+				return fmt.Errorf("task '%s' is not completed (status: %s) — cannot verify", taskID, task.Status)
+			}
+
+			task.Status = state.StatusVerified
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+
+			return jsonOut(map[string]string{
+				"task":   taskID,
+				"status": "verified",
+			})
+		},
+	}
 }
 
 func graphCmd() *cobra.Command {
@@ -508,6 +562,8 @@ func graphCmd() *cobra.Command {
 
 			statusIcon := func(s state.TaskStatus) string {
 				switch s {
+				case state.StatusVerified:
+					return "[V]"
 				case state.StatusCompleted:
 					return "[x]"
 				case state.StatusInProgress:

@@ -24,6 +24,7 @@ const (
 	StatusPending    TaskStatus = "pending"
 	StatusInProgress TaskStatus = "in_progress"
 	StatusCompleted  TaskStatus = "completed"
+	StatusVerified   TaskStatus = "verified"
 	StatusFailed     TaskStatus = "failed"
 	StatusBlocked    TaskStatus = "blocked"
 )
@@ -59,12 +60,13 @@ type Contract struct {
 
 // Session is the top-level coordination state.
 type Session struct {
-	ID         string     `json:"id"`
-	Objective  string     `json:"objective"`
-	CreatedAt  time.Time  `json:"created_at"`
-	BaseBranch string     `json:"base_branch,omitempty"`
-	Plan       *Plan      `json:"plan,omitempty"`
-	Contracts  []Contract `json:"contracts,omitempty"`
+	ID                  string     `json:"id"`
+	Objective           string     `json:"objective"`
+	CreatedAt           time.Time  `json:"created_at"`
+	BaseBranch          string     `json:"base_branch,omitempty"`
+	RequireVerification bool       `json:"require_verification,omitempty"`
+	Plan                *Plan      `json:"plan,omitempty"`
+	Contracts           []Contract `json:"contracts,omitempty"`
 }
 
 // TaskUpdate is the payload for updating a task.
