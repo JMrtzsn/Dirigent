@@ -11,7 +11,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const sessionFile = ".dirigent-session.json"
+const defaultSessionFile = ".dirigent-session.json"
+
+// SessionFileOverride allows callers to override the session file path.
+// When empty, the default resolution logic is used.
+var SessionFileOverride string
 
 // TaskStatus represents the lifecycle of a task.
 type TaskStatus string
@@ -35,6 +39,7 @@ type Task struct {
 	FilesModified []string   `json:"files_modified,omitempty"`
 	Result        string     `json:"result,omitempty"`
 	AssignedAgent string     `json:"assigned_agent,omitempty"`
+	Branch        string     `json:"branch,omitempty"`
 }
 
 // Plan holds the decomposed tasks and their dependency graph.
@@ -54,11 +59,12 @@ type Contract struct {
 
 // Session is the top-level coordination state.
 type Session struct {
-	ID        string     `json:"id"`
-	Objective string     `json:"objective"`
-	CreatedAt time.Time  `json:"created_at"`
-	Plan      *Plan      `json:"plan,omitempty"`
-	Contracts []Contract `json:"contracts,omitempty"`
+	ID         string     `json:"id"`
+	Objective  string     `json:"objective"`
+	CreatedAt  time.Time  `json:"created_at"`
+	BaseBranch string     `json:"base_branch,omitempty"`
+	Plan       *Plan      `json:"plan,omitempty"`
+	Contracts  []Contract `json:"contracts,omitempty"`
 }
 
 // TaskUpdate is the payload for updating a task.
@@ -106,21 +112,22 @@ func SessionFilePath() string {
 }
 
 func sessionPath() string {
-	// Look for .dirigent-session.json in current directory
-	// or walk up to find a git root
+	if SessionFileOverride != "" {
+		return SessionFileOverride
+	}
+
 	dir, err := os.Getwd()
 	if err != nil {
-		return sessionFile
+		return defaultSessionFile
 	}
 
 	for {
-		candidate := filepath.Join(dir, sessionFile)
+		candidate := filepath.Join(dir, defaultSessionFile)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
-		// Check if this is a git root
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return filepath.Join(dir, sessionFile)
+			return filepath.Join(dir, defaultSessionFile)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -129,5 +136,5 @@ func sessionPath() string {
 		dir = parent
 	}
 
-	return sessionFile
+	return defaultSessionFile
 }

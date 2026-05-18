@@ -1,207 +1,409 @@
-// Package main provides the dirigent CLI for task coordination.
-//
-// Subcommands:
-//
-//	dirigent init     — initialize a new coordination session
-//	dirigent plan     — store a decomposed task plan
-//	dirigent status   — query task/sibling status
-//	dirigent update   — update a task's status and artifacts
-//	dirigent contracts — manage shared interface contracts
 package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/johannesmauritzson/dirigent/cmd/dirigent/state"
+	"github.com/spf13/cobra"
 )
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: dirigent <command> [args]
-
-Commands:
-  init        Initialize a new coordination session
-  plan        Store a decomposed task plan
-  status      Query task or session status
-  update      Update a task's status and artifacts
-  contracts   Manage shared interface contracts
-  ready       List tasks whose dependencies are all completed
-  cleanup     Remove the session file
-
-All output is JSON for machine consumption.`)
-	os.Exit(1)
-}
+var version = "dirigent v0.1.0"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
+	var sessionFile string
+
+	rootCmd := &cobra.Command{
+		Use:   "dirigent",
+		Short: "Dirigent — parallel agent coordination for OpenCode",
+		Long:  "Dirigent — parallel agent coordination for OpenCode\n\nAll output is JSON for machine consumption.",
+		Version: version,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			if sessionFile != "" {
+				state.SessionFileOverride = sessionFile
+			}
+		},
 	}
 
-	var err error
-	switch os.Args[1] {
-	case "init":
-		err = cmdInit(os.Args[2:])
-	case "plan":
-		err = cmdPlan(os.Args[2:])
-	case "status":
-		err = cmdStatus(os.Args[2:])
-	case "update":
-		err = cmdUpdate(os.Args[2:])
-	case "contracts":
-		err = cmdContracts(os.Args[2:])
-	case "ready":
-		err = cmdReady()
-	case "cleanup":
-		err = cmdCleanup()
-	default:
-		usage()
-	}
+	rootCmd.PersistentFlags().StringVar(&sessionFile, "session-file", "", "path to session file (default: auto-detect)")
 
-	if err != nil {
+	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(planCmd())
+	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(updateCmd())
+	rootCmd.AddCommand(contractsCmd())
+	rootCmd.AddCommand(readyCmd())
+	rootCmd.AddCommand(cleanupCmd())
+	rootCmd.AddCommand(graphCmd())
+	rootCmd.AddCommand(checkoutCmd())
+	rootCmd.AddCommand(mergeCmd())
+
+	if err := rootCmd.Execute(); err != nil {
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
 		fmt.Fprintln(os.Stderr, string(errJSON))
 		os.Exit(1)
 	}
 }
 
-// cmdInit creates a new session with an objective.
-func cmdInit(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: dirigent init <objective>")
+func initCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init <objective>",
+		Short: "Initialize a new coordination session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session := state.NewSession(args[0])
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+			return jsonOut(session)
+		},
 	}
-	objective := args[0]
-	session := state.NewSession(objective)
-	if err := state.Save(session); err != nil {
-		return fmt.Errorf("saving session: %w", err)
-	}
-	return jsonOut(session)
 }
 
-// cmdPlan stores a task plan into the session.
-func cmdPlan(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: dirigent plan '<json>'")
-	}
+func planCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "plan '<json>'",
+		Short: "Store a decomposed task plan",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
 
-	session, err := state.Load()
-	if err != nil {
-		return fmt.Errorf("loading session: %w", err)
-	}
+			var plan state.Plan
+			if err := json.Unmarshal([]byte(args[0]), &plan); err != nil {
+				return fmt.Errorf("parsing plan JSON: %w", err)
+			}
 
-	var plan state.Plan
-	if err := json.Unmarshal([]byte(args[0]), &plan); err != nil {
-		return fmt.Errorf("parsing plan JSON: %w", err)
-	}
+			session.Plan = &plan
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].Status == "" {
+					session.Plan.Tasks[i].Status = state.StatusPending
+				}
+			}
 
-	session.Plan = &plan
-	// Initialize task statuses
-	for i := range session.Plan.Tasks {
-		if session.Plan.Tasks[i].Status == "" {
-			session.Plan.Tasks[i].Status = state.StatusPending
-		}
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+			return jsonOut(session)
+		},
 	}
-
-	if err := state.Save(session); err != nil {
-		return fmt.Errorf("saving session: %w", err)
-	}
-	return jsonOut(session)
 }
 
-// cmdStatus returns current session state, optionally filtered by task ID.
-func cmdStatus(args []string) error {
-	session, err := state.Load()
-	if err != nil {
-		return fmt.Errorf("loading session: %w", err)
-	}
-
-	if len(args) > 0 {
-		taskID := args[0]
-		for _, t := range session.Plan.Tasks {
-			if t.ID == taskID {
-				return jsonOut(t)
+func statusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status [task-id]",
+		Short: "Query task or session status",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
 			}
-		}
-		return fmt.Errorf("task '%s' not found", taskID)
-	}
 
-	return jsonOut(session)
+			if len(args) > 0 {
+				taskID := args[0]
+				for _, t := range session.Plan.Tasks {
+					if t.ID == taskID {
+						return jsonOut(t)
+					}
+				}
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+
+			return jsonOut(session)
+		},
+	}
 }
 
-// cmdUpdate updates a task's status and optionally its artifacts.
-func cmdUpdate(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: dirigent update <task-id> '<json>'")
-	}
-	taskID := args[0]
+func updateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update <task-id> '<json>'",
+		Short: "Update a task's status and artifacts",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
 
-	session, err := state.Load()
-	if err != nil {
-		return fmt.Errorf("loading session: %w", err)
-	}
-
-	if session.Plan == nil {
-		return fmt.Errorf("no plan exists yet")
-	}
-
-	var update state.TaskUpdate
-	if err := json.Unmarshal([]byte(args[1]), &update); err != nil {
-		return fmt.Errorf("parsing update JSON: %w", err)
-	}
-
-	found := false
-	for i := range session.Plan.Tasks {
-		if session.Plan.Tasks[i].ID == taskID {
-			if update.Status != "" {
-				session.Plan.Tasks[i].Status = update.Status
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
 			}
-			if update.Result != "" {
-				session.Plan.Tasks[i].Result = update.Result
-			}
-			if len(update.FilesModified) > 0 {
-				session.Plan.Tasks[i].FilesModified = update.FilesModified
-			}
-			if len(update.Interfaces) > 0 {
-				session.Plan.Tasks[i].Interfaces = update.Interfaces
-			}
-			found = true
-			break
-		}
-	}
 
-	if !found {
-		return fmt.Errorf("task '%s' not found", taskID)
-	}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
 
-	if err := state.Save(session); err != nil {
-		return fmt.Errorf("saving session: %w", err)
+			var update state.TaskUpdate
+			if err := json.Unmarshal([]byte(args[1]), &update); err != nil {
+				return fmt.Errorf("parsing update JSON: %w", err)
+			}
+
+			found := false
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					if update.Status != "" {
+						session.Plan.Tasks[i].Status = update.Status
+					}
+					if update.Result != "" {
+						session.Plan.Tasks[i].Result = update.Result
+					}
+					if len(update.FilesModified) > 0 {
+						session.Plan.Tasks[i].FilesModified = update.FilesModified
+					}
+					if len(update.Interfaces) > 0 {
+						session.Plan.Tasks[i].Interfaces = update.Interfaces
+					}
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+			return jsonOut(session.Plan)
+		},
 	}
-	return jsonOut(session.Plan)
 }
 
-// cmdContracts lists or adds shared contracts.
-func cmdContracts(args []string) error {
-	session, err := state.Load()
+func contractsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "contracts [json]",
+		Short: "Manage shared interface contracts",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+
+			if len(args) == 0 {
+				return jsonOut(session.Contracts)
+			}
+
+			var contract state.Contract
+			if err := json.Unmarshal([]byte(args[0]), &contract); err != nil {
+				return fmt.Errorf("parsing contract JSON: %w", err)
+			}
+
+			session.Contracts = append(session.Contracts, contract)
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+			return jsonOut(session.Contracts)
+		},
+	}
+}
+
+func readyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ready",
+		Short: "List tasks whose dependencies are all completed",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			statusMap := map[string]state.TaskStatus{}
+			for _, t := range session.Plan.Tasks {
+				statusMap[t.ID] = t.Status
+			}
+
+			var ready []state.Task
+			for _, t := range session.Plan.Tasks {
+				if t.Status != state.StatusPending {
+					continue
+				}
+				allMet := true
+				for _, dep := range t.DependsOn {
+					if statusMap[dep] != state.StatusCompleted {
+						allMet = false
+						break
+					}
+				}
+				if allMet {
+					ready = append(ready, t)
+				}
+			}
+
+			return jsonOut(ready)
+		},
+	}
+}
+
+func cleanupCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cleanup",
+		Short: "Remove the session file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := os.Remove(state.SessionFilePath()); err != nil {
+				if os.IsNotExist(err) {
+					return jsonOut(map[string]string{"status": "no session to clean up"})
+				}
+				return fmt.Errorf("removing session: %w", err)
+			}
+			return jsonOut(map[string]string{"status": "cleaned up"})
+		},
+	}
+}
+
+func checkoutCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "checkout <task-id>",
+		Short: "Create and switch to a task branch",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			// Record base branch on first checkout
+			if session.BaseBranch == "" {
+				out, err := gitRun("rev-parse", "--abbrev-ref", "HEAD")
+				if err != nil {
+					return fmt.Errorf("detecting current branch: %w", err)
+				}
+				session.BaseBranch = strings.TrimSpace(out)
+			}
+
+			// Find the task
+			var task *state.Task
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					task = &session.Plan.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+
+			branchName := fmt.Sprintf("dirigent/%s", taskID)
+
+			// Determine base: if task has deps, merge completed dep branches first
+			// For now, branch from base_branch
+			base := session.BaseBranch
+
+			// Create branch from base
+			if _, err := gitRun("checkout", "-b", branchName, base); err != nil {
+				// Branch might already exist
+				if _, err2 := gitRun("checkout", branchName); err2 != nil {
+					return fmt.Errorf("creating/switching to branch %s: %w", branchName, err)
+				}
+			}
+
+			task.Branch = branchName
+			task.Status = state.StatusInProgress
+
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+
+			return jsonOut(map[string]string{
+				"task":   taskID,
+				"branch": branchName,
+				"base":   base,
+				"status": "checked out",
+			})
+		},
+	}
+}
+
+func mergeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "merge <task-id>",
+		Short: "Merge a completed task branch back to base",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			var task *state.Task
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					task = &session.Plan.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+			if task.Branch == "" {
+				return fmt.Errorf("task '%s' has no branch", taskID)
+			}
+			if task.Status != state.StatusCompleted {
+				return fmt.Errorf("task '%s' is not completed (status: %s)", taskID, task.Status)
+			}
+
+			base := session.BaseBranch
+			if base == "" {
+				return fmt.Errorf("no base branch recorded in session")
+			}
+
+			// Switch to base branch
+			if _, err := gitRun("checkout", base); err != nil {
+				return fmt.Errorf("switching to base branch %s: %w", base, err)
+			}
+
+			// Merge task branch
+			if _, err := gitRun("merge", "--no-ff", "-m", fmt.Sprintf("Merge dirigent task: %s", taskID), task.Branch); err != nil {
+				return jsonOut(map[string]string{
+					"task":   taskID,
+					"status": "conflict",
+					"error":  "merge conflict — resolve manually then run `dirigent update <task-id> '{\"status\":\"completed\"}'`",
+				})
+			}
+
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+
+			return jsonOut(map[string]string{
+				"task":   taskID,
+				"branch": task.Branch,
+				"merged": base,
+				"status": "merged",
+			})
+		},
+	}
+}
+
+func gitRun(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("loading session: %w", err)
+		return string(out), fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
-
-	if len(args) == 0 {
-		// List contracts
-		return jsonOut(session.Contracts)
-	}
-
-	// Add a contract
-	var contract state.Contract
-	if err := json.Unmarshal([]byte(args[0]), &contract); err != nil {
-		return fmt.Errorf("parsing contract JSON: %w", err)
-	}
-
-	session.Contracts = append(session.Contracts, contract)
-	if err := state.Save(session); err != nil {
-		return fmt.Errorf("saving session: %w", err)
-	}
-	return jsonOut(session.Contracts)
+	return string(out), nil
 }
 
 func jsonOut(v any) error {
@@ -210,49 +412,111 @@ func jsonOut(v any) error {
 	return enc.Encode(v)
 }
 
-// cmdReady returns tasks whose dependencies are all completed and that are still pending.
-func cmdReady() error {
-	session, err := state.Load()
-	if err != nil {
-		return fmt.Errorf("loading session: %w", err)
-	}
-	if session.Plan == nil {
-		return fmt.Errorf("no plan exists yet")
-	}
-
-	// Build status lookup
-	statusMap := map[string]state.TaskStatus{}
-	for _, t := range session.Plan.Tasks {
-		statusMap[t.ID] = t.Status
-	}
-
-	var ready []state.Task
-	for _, t := range session.Plan.Tasks {
-		if t.Status != state.StatusPending {
-			continue
-		}
-		allMet := true
-		for _, dep := range t.DependsOn {
-			if statusMap[dep] != state.StatusCompleted {
-				allMet = false
-				break
+func graphCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "graph",
+		Short: "Visualize the dependency graph",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
 			}
-		}
-		if allMet {
-			ready = append(ready, t)
-		}
-	}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
 
-	return jsonOut(ready)
+			tasks := session.Plan.Tasks
+			statusMap := map[string]state.TaskStatus{}
+			taskByID := map[string]state.Task{}
+			for _, t := range tasks {
+				statusMap[t.ID] = t.Status
+				taskByID[t.ID] = t
+			}
+
+			// Group tasks into waves (topological layers)
+			placed := map[string]bool{}
+			var waves [][]state.Task
+			for len(placed) < len(tasks) {
+				var wave []state.Task
+				for _, t := range tasks {
+					if placed[t.ID] {
+						continue
+					}
+					ready := true
+					for _, dep := range t.DependsOn {
+						if !placed[dep] {
+							ready = false
+							break
+						}
+					}
+					if ready {
+						wave = append(wave, t)
+					}
+				}
+				if len(wave) == 0 {
+					break // circular dep safety
+				}
+				for _, t := range wave {
+					placed[t.ID] = true
+				}
+				waves = append(waves, wave)
+			}
+
+			// Render
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Objective: %s\n\n", session.Objective))
+
+			statusIcon := func(s state.TaskStatus) string {
+				switch s {
+				case state.StatusCompleted:
+					return "[x]"
+				case state.StatusInProgress:
+					return "[~]"
+				case state.StatusFailed:
+					return "[!]"
+				case state.StatusBlocked:
+					return "[-]"
+				default:
+					return "[ ]"
+				}
+			}
+
+			for i, wave := range waves {
+				sb.WriteString(fmt.Sprintf("Wave %d", i+1))
+				if i > 0 {
+					// show which previous tasks this wave depends on
+					var deps []string
+					for _, t := range wave {
+						deps = append(deps, t.DependsOn...)
+					}
+					if len(deps) > 0 {
+						sb.WriteString(fmt.Sprintf(" (after: %s)", strings.Join(unique(deps), ", ")))
+					}
+				}
+				sb.WriteString("\n")
+				for _, t := range wave {
+					sb.WriteString(fmt.Sprintf("  %s %s — %s\n", statusIcon(t.Status), t.ID, t.Title))
+				}
+				if i < len(waves)-1 {
+					sb.WriteString("  |\n  v\n")
+				}
+			}
+
+			fmt.Print(sb.String())
+			return nil
+		},
+	}
 }
 
-// cmdCleanup removes the session file.
-func cmdCleanup() error {
-	if err := os.Remove(state.SessionFilePath()); err != nil {
-		if os.IsNotExist(err) {
-			return jsonOut(map[string]string{"status": "no session to clean up"})
+func unique(ss []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
 		}
-		return fmt.Errorf("removing session: %w", err)
 	}
-	return jsonOut(map[string]string{"status": "cleaned up"})
+	return out
 }

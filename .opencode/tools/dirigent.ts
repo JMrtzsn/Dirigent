@@ -86,3 +86,31 @@ export const cleanup = tool({
     return run(["cleanup"])
   },
 })
+
+export const checkout = tool({
+  description: "Create and switch to a git branch for a task. Enables parallel agents to work on isolated branches.",
+  args: {
+    taskId: tool.schema.string().describe("The task ID to create a branch for"),
+  },
+  async execute(args) {
+    return run(["checkout", args.taskId])
+  },
+})
+
+export const merge = tool({
+  description: "Merge a completed task's branch back to the base branch.",
+  args: {
+    taskId: tool.schema.string().describe("The task ID whose branch to merge"),
+  },
+  async execute(args) {
+    return run(["merge", args.taskId])
+  },
+})
+
+export const graph = tool({
+  description: "Visualize the dependency graph as ASCII art showing waves and task status.",
+  args: {},
+  async execute() {
+    return run(["graph"])
+  },
+})
