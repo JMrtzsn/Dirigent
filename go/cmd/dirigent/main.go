@@ -266,7 +266,7 @@ func cleanupCmd() *cobra.Command {
 func checkoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "checkout <task-id>",
-		Short: "Create and switch to a task branch",
+		Short: "Create a git worktree for a task (true parallel isolation)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			taskID := args[0]
@@ -301,16 +301,21 @@ func checkoutCmd() *cobra.Command {
 			}
 
 			branchName := fmt.Sprintf("dirigent/%s", taskID)
+			worktreeDir := fmt.Sprintf(".dirigent-worktrees/%s", taskID)
 
-			// Determine base: if task has deps, merge completed dep branches first
-			// For now, branch from base_branch
-			base := session.BaseBranch
+			// Get absolute path for worktree
+			repoRoot, err := gitRun("rev-parse", "--show-toplevel")
+			if err != nil {
+				return fmt.Errorf("finding repo root: %w", err)
+			}
+			repoRoot = strings.TrimSpace(repoRoot)
+			worktreePath := fmt.Sprintf("%s/%s", repoRoot, worktreeDir)
 
-			// Create branch from base
-			if _, err := gitRun("checkout", "-b", branchName, base); err != nil {
-				// Branch might already exist
-				if _, err2 := gitRun("checkout", branchName); err2 != nil {
-					return fmt.Errorf("creating/switching to branch %s: %w", branchName, err)
+			// Create worktree with new branch
+			if _, err := gitRun("worktree", "add", "-b", branchName, worktreePath, session.BaseBranch); err != nil {
+				// Branch might already exist, try without -b
+				if _, err2 := gitRun("worktree", "add", worktreePath, branchName); err2 != nil {
+					return fmt.Errorf("creating worktree: %w", err)
 				}
 			}
 
@@ -322,10 +327,11 @@ func checkoutCmd() *cobra.Command {
 			}
 
 			return jsonOut(map[string]string{
-				"task":   taskID,
-				"branch": branchName,
-				"base":   base,
-				"status": "checked out",
+				"task":     taskID,
+				"branch":  branchName,
+				"worktree": worktreePath,
+				"base":    session.BaseBranch,
+				"status":  "checked out",
 			})
 		},
 	}
@@ -334,7 +340,7 @@ func checkoutCmd() *cobra.Command {
 func mergeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "merge <task-id>",
-		Short: "Merge a completed task branch back to base",
+		Short: "Merge a completed task branch and remove its worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			taskID := args[0]
@@ -369,19 +375,23 @@ func mergeCmd() *cobra.Command {
 				return fmt.Errorf("no base branch recorded in session")
 			}
 
-			// Switch to base branch
-			if _, err := gitRun("checkout", base); err != nil {
-				return fmt.Errorf("switching to base branch %s: %w", base, err)
-			}
+			// Remove worktree first (if it exists)
+			repoRoot, _ := gitRun("rev-parse", "--show-toplevel")
+			repoRoot = strings.TrimSpace(repoRoot)
+			worktreePath := fmt.Sprintf("%s/.dirigent-worktrees/%s", repoRoot, taskID)
+			gitRun("worktree", "remove", worktreePath) // ignore error if already removed
 
-			// Merge task branch
+			// Merge task branch into base
 			if _, err := gitRun("merge", "--no-ff", "-m", fmt.Sprintf("Merge dirigent task: %s", taskID), task.Branch); err != nil {
 				return jsonOut(map[string]string{
 					"task":   taskID,
 					"status": "conflict",
-					"error":  "merge conflict — resolve manually then run `dirigent update <task-id> '{\"status\":\"completed\"}'`",
+					"error":  "merge conflict — resolve manually",
 				})
 			}
+
+			// Delete the task branch
+			gitRun("branch", "-d", task.Branch)
 
 			if err := state.Save(session); err != nil {
 				return fmt.Errorf("saving session: %w", err)
