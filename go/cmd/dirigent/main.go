@@ -42,6 +42,7 @@ func main() {
 	rootCmd.AddCommand(graphCmd())
 	rootCmd.AddCommand(checkoutCmd())
 	rootCmd.AddCommand(mergeCmd())
+	rootCmd.AddCommand(listWorktreesCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -515,6 +516,56 @@ func graphCmd() *cobra.Command {
 
 			fmt.Print(sb.String())
 			return nil
+		},
+	}
+}
+
+func listWorktreesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list-worktrees",
+		Short: "List worktrees for tasks with branches",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return jsonOut([]any{})
+			}
+			if session.Plan == nil {
+				return jsonOut([]any{})
+			}
+
+			repoRoot, err := gitRun("rev-parse", "--show-toplevel")
+			if err != nil {
+				return fmt.Errorf("finding repo root: %w", err)
+			}
+			repoRoot = strings.TrimSpace(repoRoot)
+
+			type worktreeEntry struct {
+				TaskID string `json:"task_id"`
+				Branch string `json:"branch"`
+				Path   string `json:"path"`
+				Exists bool   `json:"exists"`
+			}
+
+			var entries []worktreeEntry
+			for _, t := range session.Plan.Tasks {
+				if t.Branch == "" {
+					continue
+				}
+				wtPath := fmt.Sprintf("%s/.dirigent-worktrees/%s", repoRoot, t.ID)
+				_, statErr := os.Stat(wtPath)
+				entries = append(entries, worktreeEntry{
+					TaskID: t.ID,
+					Branch: t.Branch,
+					Path:   wtPath,
+					Exists: statErr == nil,
+				})
+			}
+
+			if entries == nil {
+				return jsonOut([]any{})
+			}
+			return jsonOut(entries)
 		},
 	}
 }
