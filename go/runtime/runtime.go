@@ -99,7 +99,7 @@ func (rt *Runtime) Delegate(ctx context.Context, opts DelegateOpts) (core.Delega
 		return core.DelegateResponse{}, fmt.Errorf("must provide either Capability or To")
 	}
 	if opts.Sender == "" {
-		opts.Sender = "__runtime__"
+		opts.Sender = "runtime"
 	}
 
 	if rt.depth >= rt.config.MaxDelegationDepth {

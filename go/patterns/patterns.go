@@ -9,10 +9,17 @@ import (
 	"github.com/johannesmauritzson/dirigent/runtime"
 )
 
+// Sender identifiers for tracing which pattern initiated a delegation.
+const (
+	SenderDelegate   = "pattern:delegate"
+	SenderFanout     = "pattern:fanout"
+	SenderReviewLoop = "pattern:review_loop"
+)
+
 // Delegate sends a task to a single agent. Thin wrapper over runtime.Delegate.
 func Delegate(ctx context.Context, rt *runtime.Runtime, opts runtime.DelegateOpts) (core.DelegateResponse, error) {
 	if opts.Sender == "" {
-		opts.Sender = "__pattern__"
+		opts.Sender = SenderDelegate
 	}
 	return rt.Delegate(ctx, opts)
 }
@@ -35,7 +42,7 @@ func Fanout(ctx context.Context, rt *runtime.Runtime, agents []string, task stri
 				To:      agentName,
 				Task:    task,
 				Context: taskCtx,
-				Sender:  "__fanout__",
+				Sender:  SenderFanout,
 			})
 			results[idx] = resp
 			errs[idx] = err
@@ -75,7 +82,7 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 			To:      producer,
 			Task:    task,
 			Context: currentCtx,
-			Sender:  "__review_loop__",
+			Sender:  SenderReviewLoop,
 		})
 		if err != nil {
 			return ReviewResult{}, err
@@ -113,7 +120,7 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 			To:      reviewer,
 			Task:    "Review this submission for: " + task,
 			Context: reviewCtx,
-			Sender:  "__review_loop__",
+			Sender:  SenderReviewLoop,
 		})
 		if err != nil {
 			return ReviewResult{}, err
