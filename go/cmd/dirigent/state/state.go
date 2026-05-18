@@ -41,6 +41,7 @@ type Task struct {
 	Result        string     `json:"result,omitempty"`
 	AssignedAgent string     `json:"assigned_agent,omitempty"`
 	Branch        string     `json:"branch,omitempty"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 }
 
 // Plan holds the decomposed tasks and their dependency graph.

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/johannesmauritzson/dirigent/cmd/dirigent/state"
 	"github.com/spf13/cobra"
@@ -46,6 +48,7 @@ func main() {
 	rootCmd.AddCommand(verifyCmd())
 	rootCmd.AddCommand(reviewCmd())
 	rootCmd.AddCommand(diffCmd())
+	rootCmd.AddCommand(logCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -157,6 +160,10 @@ func updateCmd() *cobra.Command {
 				if session.Plan.Tasks[i].ID == taskID {
 					if update.Status != "" {
 						session.Plan.Tasks[i].Status = update.Status
+					}
+					if update.Status == state.StatusCompleted {
+						now := time.Now()
+						session.Plan.Tasks[i].CompletedAt = &now
 					}
 					if update.Result != "" {
 						session.Plan.Tasks[i].Result = update.Result
@@ -508,7 +515,10 @@ func verifyCmd() *cobra.Command {
 }
 
 func graphCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonFlag bool
+	var noColor bool
+
+	cmd := &cobra.Command{
 		Use:   "graph",
 		Short: "Visualize the dependency graph",
 		Args:  cobra.NoArgs,
@@ -558,31 +568,69 @@ func graphCmd() *cobra.Command {
 				waves = append(waves, wave)
 			}
 
-			// Render
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Objective: %s\n\n", session.Objective))
+			// JSON output mode
+			if jsonFlag {
+				type jsonTask struct {
+					ID        string   `json:"id"`
+					Title     string   `json:"title"`
+					Status    string   `json:"status"`
+					DependsOn []string `json:"depends_on"`
+				}
+				type jsonOutput struct {
+					Objective string       `json:"objective"`
+					Waves     [][]jsonTask `json:"waves"`
+				}
+				out := jsonOutput{Objective: session.Objective}
+				for _, wave := range waves {
+					var jw []jsonTask
+					for _, t := range wave {
+						deps := t.DependsOn
+						if deps == nil {
+							deps = []string{}
+						}
+						jw = append(jw, jsonTask{
+							ID:        t.ID,
+							Title:     t.Title,
+							Status:    string(t.Status),
+							DependsOn: deps,
+						})
+					}
+					out.Waves = append(out.Waves, jw)
+				}
+				return jsonOut(out)
+			}
+
+			// Render ASCII
+			useColor := !noColor
 
 			statusIcon := func(s state.TaskStatus) string {
+				var icon, color string
 				switch s {
 				case state.StatusVerified:
-					return "[V]"
+					icon, color = "[V]", "\033[32m"
 				case state.StatusCompleted:
-					return "[x]"
+					icon, color = "[x]", "\033[32m"
 				case state.StatusInProgress:
-					return "[~]"
+					icon, color = "[~]", "\033[33m"
 				case state.StatusFailed:
-					return "[!]"
+					icon, color = "[!]", "\033[31m"
 				case state.StatusBlocked:
-					return "[-]"
+					icon, color = "[-]", "\033[31m"
 				default:
-					return "[ ]"
+					icon, color = "[ ]", "\033[2m"
 				}
+				if useColor {
+					return color + icon + "\033[0m"
+				}
+				return icon
 			}
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Objective: %s\n\n", session.Objective))
 
 			for i, wave := range waves {
 				sb.WriteString(fmt.Sprintf("Wave %d", i+1))
 				if i > 0 {
-					// show which previous tasks this wave depends on
 					var deps []string
 					for _, t := range wave {
 						deps = append(deps, t.DependsOn...)
@@ -604,6 +652,11 @@ func graphCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output wave structure as JSON")
+	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable ANSI colors")
+
+	return cmd
 }
 
 func listWorktreesCmd() *cobra.Command {
@@ -753,6 +806,51 @@ func diffCmd() *cobra.Command {
 			}
 			fmt.Print(out)
 			return nil
+		},
+	}
+}
+
+func logCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "log",
+		Short: "Show completed tasks sorted by completion time",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			type logEntry struct {
+				ID          string    `json:"id"`
+				Title       string    `json:"title"`
+				Status      string    `json:"status"`
+				CompletedAt time.Time `json:"completed_at"`
+			}
+
+			var entries []logEntry
+			for _, t := range session.Plan.Tasks {
+				if t.CompletedAt != nil {
+					entries = append(entries, logEntry{
+						ID:          t.ID,
+						Title:       t.Title,
+						Status:      string(t.Status),
+						CompletedAt: *t.CompletedAt,
+					})
+				}
+			}
+
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].CompletedAt.Before(entries[j].CompletedAt)
+			})
+
+			if entries == nil {
+				return jsonOut([]any{})
+			}
+			return jsonOut(entries)
 		},
 	}
 }
