@@ -63,24 +63,41 @@ type ReviewResult struct {
 	Accepted    bool
 	FinalResult any
 	Rounds      int
-	History     []map[string]any
+	History     []HistoryEntry
 }
 
-// ReviewLoop runs a produce → review → revise cycle up to maxRounds.
-func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, task string, taskCtx map[string]any, maxRounds int) (ReviewResult, error) {
-	history := make([]map[string]any, 0)
+// HistoryEntry records a single produce or review step.
+type HistoryEntry struct {
+	Round   int
+	Phase   string // "produce" or "review"
+	Success bool
+	Result  any
+}
+
+// ReviewOpts configures a review loop.
+type ReviewOpts struct {
+	Producer  string
+	Reviewer  string
+	Task      string
+	Context   map[string]any
+	MaxRounds int
+}
+
+// ReviewLoop runs a produce → review → revise cycle up to MaxRounds.
+func ReviewLoop(ctx context.Context, rt *runtime.Runtime, opts ReviewOpts) (ReviewResult, error) {
+	history := make([]HistoryEntry, 0)
 	currentCtx := make(map[string]any)
-	for k, v := range taskCtx {
+	for k, v := range opts.Context {
 		currentCtx[k] = v
 	}
 
 	var lastResult any
 
-	for round := 1; round <= maxRounds; round++ {
+	for round := 1; round <= opts.MaxRounds; round++ {
 		// Producer generates
 		production, err := rt.Delegate(ctx, runtime.DelegateOpts{
-			To:      producer,
-			Task:    task,
+			To:      opts.Producer,
+			Task:    opts.Task,
 			Context: currentCtx,
 			Sender:  SenderReviewLoop,
 		})
@@ -88,11 +105,11 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 			return ReviewResult{}, err
 		}
 
-		history = append(history, map[string]any{
-			"round":   round,
-			"phase":   "produce",
-			"success": production.Success,
-			"result":  production.Result,
+		history = append(history, HistoryEntry{
+			Round:   round,
+			Phase:   "produce",
+			Success: production.Success,
+			Result:  production.Result,
 		})
 
 		if !production.Success {
@@ -109,7 +126,7 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 		// Reviewer evaluates
 		reviewCtx := map[string]any{
 			"submission":    production.Result,
-			"original_task": task,
+			"original_task": opts.Task,
 			"round":         round,
 		}
 		for k, v := range currentCtx {
@@ -117,8 +134,8 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 		}
 
 		review, err := rt.Delegate(ctx, runtime.DelegateOpts{
-			To:      reviewer,
-			Task:    "Review this submission for: " + task,
+			To:      opts.Reviewer,
+			Task:    "Review this submission for: " + opts.Task,
 			Context: reviewCtx,
 			Sender:  SenderReviewLoop,
 		})
@@ -126,11 +143,11 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 			return ReviewResult{}, err
 		}
 
-		history = append(history, map[string]any{
-			"round":   round,
-			"phase":   "review",
-			"success": review.Success,
-			"result":  review.Result,
+		history = append(history, HistoryEntry{
+			Round:   round,
+			Phase:   "review",
+			Success: review.Success,
+			Result:  review.Result,
 		})
 
 		// Check acceptance
@@ -154,7 +171,7 @@ func ReviewLoop(ctx context.Context, rt *runtime.Runtime, producer, reviewer, ta
 	return ReviewResult{
 		Accepted:    false,
 		FinalResult: lastResult,
-		Rounds:      maxRounds,
+		Rounds:      opts.MaxRounds,
 		History:     history,
 	}, nil
 }

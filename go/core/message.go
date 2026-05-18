@@ -7,26 +7,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// MessageKind discriminates message types for routing.
-type MessageKind string
-
-const (
-	KindDelegateRequest  MessageKind = "delegate_request"
-	KindDelegateResponse MessageKind = "delegate_response"
-	KindFeedback         MessageKind = "feedback"
-)
-
 // DelegateRequest is sent when one agent asks another to perform work.
 type DelegateRequest struct {
-	ID            string
-	Timestamp     time.Time
-	Sender        string
-	Receiver      string
-	CorrelationID string
-	Capability    string
-	Task          string
-	Context       map[string]any
-	Constraints   map[string]any
+	ID          string
+	Timestamp   time.Time
+	Sender      string
+	Receiver    string
+	Capability  string
+	Task        string
+	Context     map[string]any
+	Constraints map[string]any
 }
 
 // NewDelegateRequest creates a request with a generated ID and current timestamp.

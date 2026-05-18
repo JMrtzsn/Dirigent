@@ -157,7 +157,12 @@ func TestReviewLoopAcceptsOnSecondRound(t *testing.T) {
 
 	rt := newTestRuntime(dev, reviewer)
 
-	result, err := patterns.ReviewLoop(context.Background(), rt, "fakedeveloper", "fakereviewer", "implement auth", nil, 5)
+	result, err := patterns.ReviewLoop(context.Background(), rt, patterns.ReviewOpts{
+		Producer:  "fakedeveloper",
+		Reviewer:  "fakereviewer",
+		Task:      "implement auth",
+		MaxRounds: 5,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
