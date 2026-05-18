@@ -249,16 +249,44 @@ func readyCmd() *cobra.Command {
 func cleanupCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "cleanup",
-		Short: "Remove the session file",
+		Short: "Remove worktrees, task branches, and the session file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := os.Remove(state.SessionFilePath()); err != nil {
-				if os.IsNotExist(err) {
-					return jsonOut(map[string]string{"status": "no session to clean up"})
+			worktreesRemoved := 0
+
+			// Load session to find branches/worktrees to clean
+			session, err := state.Load()
+			if err == nil && session.Plan != nil {
+				repoRoot, _ := gitRun("rev-parse", "--show-toplevel")
+				repoRoot = strings.TrimSpace(repoRoot)
+
+				for _, t := range session.Plan.Tasks {
+					if t.Branch == "" {
+						continue
+					}
+					worktreePath := fmt.Sprintf("%s/.dirigent-worktrees/%s", repoRoot, t.ID)
+					gitRun("worktree", "remove", worktreePath, "--force")
+					gitRun("branch", "-D", t.Branch)
+					worktreesRemoved++
 				}
+			}
+
+			// Prune worktrees and remove directory
+			gitRun("worktree", "prune")
+
+			repoRoot, _ := gitRun("rev-parse", "--show-toplevel")
+			repoRoot = strings.TrimSpace(repoRoot)
+			os.RemoveAll(fmt.Sprintf("%s/.dirigent-worktrees", repoRoot))
+
+			// Remove session file
+			if err := os.Remove(state.SessionFilePath()); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("removing session: %w", err)
 			}
-			return jsonOut(map[string]string{"status": "cleaned up"})
+
+			return jsonOut(map[string]any{
+				"status":             "cleaned up",
+				"worktrees_removed":  worktreesRemoved,
+			})
 		},
 	}
 }
