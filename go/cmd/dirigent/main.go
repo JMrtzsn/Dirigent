@@ -44,6 +44,7 @@ func main() {
 	rootCmd.AddCommand(mergeCmd())
 	rootCmd.AddCommand(listWorktreesCmd())
 	rootCmd.AddCommand(verifyCmd())
+	rootCmd.AddCommand(diffCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -650,6 +651,51 @@ func listWorktreesCmd() *cobra.Command {
 				return jsonOut([]any{})
 			}
 			return jsonOut(entries)
+		},
+	}
+}
+
+func diffCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "diff <task-id>",
+		Short: "Show git diff between base branch and task branch",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+
+			var task *state.Task
+			for i := range session.Plan.Tasks {
+				if session.Plan.Tasks[i].ID == taskID {
+					task = &session.Plan.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+			if task.Branch == "" {
+				return fmt.Errorf("task has no branch")
+			}
+
+			base := session.BaseBranch
+			if base == "" {
+				return fmt.Errorf("no base branch recorded in session")
+			}
+
+			out, err := gitRun("diff", fmt.Sprintf("%s...%s", base, task.Branch))
+			if err != nil {
+				return fmt.Errorf("running git diff: %w", err)
+			}
+			fmt.Print(out)
+			return nil
 		},
 	}
 }
