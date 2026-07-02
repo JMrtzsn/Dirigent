@@ -1,17 +1,13 @@
-# Dirigent Go Framework
+# Dirigent Go CLI
 
-Parallel agent coordination engine — the CLI binary behind the OpenCode plugin.
+Parallel agent coordination engine — a stateless CLI over a JSON session file.
 
 ## Architecture
 
 | Package | Purpose |
 |---------|---------|
-| `core` | Agent interface, capability registry, request/response messages |
-| `runtime` | Execution engine — routes delegations with timeout and depth limits |
-| `patterns` | Composable patterns: Delegate, Fanout, ReviewLoop |
-| `cmd/dirigent` | CLI binary (cobra) — JSON session management |
+| `cmd/dirigent` | CLI binary (cobra) — JSON session management + git worktree orchestration |
 | `cmd/dirigent/state` | Session persistence (`.dirigent-session.json`) |
-| `utils` | Repository scanning (file tree, key files) |
 
 ## Build
 
@@ -23,7 +19,7 @@ make build
 ## Test
 
 ```sh
-make go-test
+make test
 # or: cd go && go test ./...
 ```
 
@@ -56,20 +52,6 @@ All output is JSON (except `graph` without `--json`).
 ## Key Types
 
 ```go
-// core.Agent — interface all agents implement
-type Agent interface {
-    Info() AgentInfo
-    Handle(ctx context.Context, req DelegateRequest) (DelegateResponse, error)
-}
-
 // state.Session — coordination state (objective, plan, contracts)
 // state.Task — unit of work (status, depends_on, branch, completed_at)
 ```
-
-## Patterns
-
-| Pattern | Description |
-|---------|-------------|
-| `Delegate` | Send a task to a single agent by name or capability |
-| `Fanout` | Send the same task to N agents in parallel |
-| `ReviewLoop` | Produce → review → revise with max rounds |

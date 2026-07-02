@@ -60,13 +60,9 @@ completed → merge
 
 ## Integration with OpenCode
 
-Dirigent runs as an OpenCode plugin via `.opencode/tools/dirigent.ts`. The orchestrator (OpenCode's main agent) calls Dirigent tools to coordinate sub-agents spawned via the Task tool.
-
-```
-.opencode/tools/dirigent.ts      — 10 custom tools calling the Go binary
-.opencode/plugins/dirigent.ts    — /dirigent command + compaction hook
-.opencode/skills/dirigent/       — coordination protocol for the LLM
-```
+Dirigent is a standalone CLI. The orchestrator (an LLM, e.g. OpenCode's main
+agent) drives it by running the `dirigent` subcommands and parsing their JSON
+output to coordinate sub-agents it spawns.
 
 ## Build
 
@@ -78,7 +74,7 @@ make build
 ## Test
 
 ```sh
-make go-test
+make test
 # or: cd go && go test ./...
 ```
 
@@ -86,12 +82,8 @@ make go-test
 
 ```
 go/
-├── cmd/dirigent/         CLI binary (cobra)
-│   └── state/            Session persistence (.dirigent-session.json)
-├── core/                 Agent interface, messages, capability registry
-├── runtime/              Execution engine (timeout, traces, depth limit)
-├── patterns/             Delegate, Fanout, ReviewLoop
-└── utils/                Repo scanning (file tree, key files)
+└── cmd/dirigent/         CLI binary (cobra)
+    └── state/            Session persistence (.dirigent-session.json)
 ```
 
 ## License
