@@ -116,3 +116,12 @@ func TestPlanJSON(t *testing.T) {
 		t.Fatal("expected auth first in execution order")
 	}
 }
+
+func TestSessionFilePathUsesEnvWhenSet(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "session.json")
+	t.Setenv(state.SessionEnv, want)
+
+	if got := state.SessionFilePath(); got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}

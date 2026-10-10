@@ -29,10 +29,11 @@ Each task gets its own git worktree — true parallel isolation. No branch confl
 | `graph` | Visualize dependency waves (with color, or `--json`) |
 | `ready` | List tasks whose deps are satisfied |
 | `checkout <task-id>` | Create worktree + branch for a task |
+| `spawn <task-id> [--model m] [--agent a]` | Check out a task and run a separate headless `opencode` in its worktree |
 | `diff <task-id>` | Show git diff of task branch vs base |
 | `review <task-id>` | Show task details, diff stats, open worktree |
 | `verify <task-id>` | Human-approve a task (unlocks merge) |
-| `merge <task-id>` | Merge task branch back to base, remove worktree |
+| `merge <task-id>` | Commit uncommitted worker changes, merge task branch into base, remove worktree |
 | `log` | Show completed tasks with timestamps |
 | `status [task-id]` | Query session or task status |
 | `update <task-id> '<json>'` | Update task status/result |
@@ -45,7 +46,7 @@ All output is JSON (except `graph` without `--json`).
 ## Flow
 
 ```
-init → plan → checkout (parallel) → agents work → update → verify → merge → cleanup
+init → plan → spawn (parallel) → workers run → update → verify → merge → cleanup
 ```
 
 With `--require-verification`:
@@ -60,9 +61,20 @@ completed → merge
 
 ## Integration with OpenCode
 
-Dirigent is a standalone CLI. The orchestrator (an LLM, e.g. OpenCode's main
-agent) drives it by running the `dirigent` subcommands and parsing their JSON
-output to coordinate sub-agents it spawns.
+`make install` links the binary to `~/.local/bin/dirigent` and copies
+`plugin/dirigent.ts` into `~/.config/opencode/plugins/`, so it works in any repo.
+The plugin is copied, not symlinked, so it resolves `@opencode-ai/plugin` from
+the global config. Rerun `make install` after changing it.
+
+Run `/dirigent <objective>` in opencode. The orchestrator plans tasks, then
+`dirigent_spawn` starts one `opencode run` process per task inside its worktree,
+so workers never share a working directory. Workers find the session through
+`DIRIGENT_SESSION` and report with `dirigent update`. `dirigent_wait` blocks
+until all workers exit and marks silent exits as failed. Worker output goes to
+`.dirigent-worktrees/<task>.log`.
+
+Dirigent adds `.dirigent-worktrees/` and `.dirigent-session.json` to the host
+repo's `.git/info/exclude`, never to its `.gitignore`.
 
 ## Build
 

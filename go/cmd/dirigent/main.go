@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/johannesmauritzson/dirigent/cmd/dirigent/state"
@@ -19,10 +21,10 @@ func main() {
 	var sessionFile string
 
 	rootCmd := &cobra.Command{
-		Use:   "dirigent",
-		Short: "Dirigent — parallel agent coordination for OpenCode",
-		Long:  "Dirigent — parallel agent coordination for OpenCode\n\nAll output is JSON for machine consumption.",
-		Version: version,
+		Use:           "dirigent",
+		Short:         "Dirigent — parallel agent coordination for OpenCode",
+		Long:          "Dirigent — parallel agent coordination for OpenCode\n\nAll output is JSON for machine consumption.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -43,6 +45,7 @@ func main() {
 	rootCmd.AddCommand(cleanupCmd())
 	rootCmd.AddCommand(graphCmd())
 	rootCmd.AddCommand(checkoutCmd())
+	rootCmd.AddCommand(spawnCmd())
 	rootCmd.AddCommand(mergeCmd())
 	rootCmd.AddCommand(listWorktreesCmd())
 	rootCmd.AddCommand(verifyCmd())
@@ -299,8 +302,8 @@ func cleanupCmd() *cobra.Command {
 			}
 
 			return jsonOut(map[string]any{
-				"status":             "cleaned up",
-				"worktrees_removed":  worktreesRemoved,
+				"status":            "cleaned up",
+				"worktrees_removed": worktreesRemoved,
 			})
 		},
 	}
@@ -322,59 +325,24 @@ func checkoutCmd() *cobra.Command {
 				return fmt.Errorf("no plan exists yet")
 			}
 
-			// Record base branch on first checkout
-			if session.BaseBranch == "" {
-				out, err := gitRun("rev-parse", "--abbrev-ref", "HEAD")
-				if err != nil {
-					return fmt.Errorf("detecting current branch: %w", err)
-				}
-				session.BaseBranch = strings.TrimSpace(out)
-			}
-
-			// Find the task
-			var task *state.Task
-			for i := range session.Plan.Tasks {
-				if session.Plan.Tasks[i].ID == taskID {
-					task = &session.Plan.Tasks[i]
-					break
-				}
-			}
+			task := findTask(session, taskID)
 			if task == nil {
 				return fmt.Errorf("task '%s' not found", taskID)
 			}
-
-			branchName := fmt.Sprintf("dirigent/%s", taskID)
-			worktreeDir := fmt.Sprintf(".dirigent-worktrees/%s", taskID)
-
-			// Get absolute path for worktree
-			repoRoot, err := gitRun("rev-parse", "--show-toplevel")
+			worktreePath, err := checkoutTask(session, task)
 			if err != nil {
-				return fmt.Errorf("finding repo root: %w", err)
+				return err
 			}
-			repoRoot = strings.TrimSpace(repoRoot)
-			worktreePath := fmt.Sprintf("%s/%s", repoRoot, worktreeDir)
-
-			// Create worktree with new branch
-			if _, err := gitRun("worktree", "add", "-b", branchName, worktreePath, session.BaseBranch); err != nil {
-				// Branch might already exist, try without -b
-				if _, err2 := gitRun("worktree", "add", worktreePath, branchName); err2 != nil {
-					return fmt.Errorf("creating worktree: %w", err)
-				}
-			}
-
-			task.Branch = branchName
-			task.Status = state.StatusInProgress
-
 			if err := state.Save(session); err != nil {
 				return fmt.Errorf("saving session: %w", err)
 			}
 
 			return jsonOut(map[string]string{
 				"task":     taskID,
-				"branch":  branchName,
+				"branch":   task.Branch,
 				"worktree": worktreePath,
-				"base":    session.BaseBranch,
-				"status":  "checked out",
+				"base":     session.BaseBranch,
+				"status":   "checked out",
 			})
 		},
 	}
@@ -428,7 +396,14 @@ func mergeCmd() *cobra.Command {
 			repoRoot, _ := gitRun("rev-parse", "--show-toplevel")
 			repoRoot = strings.TrimSpace(repoRoot)
 			worktreePath := fmt.Sprintf("%s/.dirigent-worktrees/%s", repoRoot, taskID)
-			gitRun("worktree", "remove", worktreePath) // ignore error if already removed
+			if _, err := os.Stat(worktreePath); err == nil {
+				if err := commitWorktree(worktreePath, taskID); err != nil {
+					return err
+				}
+				if _, err := gitRun("worktree", "remove", worktreePath); err != nil {
+					return err
+				}
+			}
 
 			// Merge task branch into base
 			if _, err := gitRun("merge", "--no-ff", "-m", fmt.Sprintf("Merge dirigent task: %s", taskID), task.Branch); err != nil {
@@ -454,6 +429,210 @@ func mergeCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func findTask(session *state.Session, id string) *state.Task {
+	for i := range session.Plan.Tasks {
+		if session.Plan.Tasks[i].ID == id {
+			return &session.Plan.Tasks[i]
+		}
+	}
+	return nil
+}
+
+// checkoutTask creates the task's worktree (or reuses an existing one) and
+// marks the task in progress. The caller saves the session.
+func checkoutTask(session *state.Session, task *state.Task) (string, error) {
+	if session.BaseBranch == "" {
+		out, err := gitRun("rev-parse", "--abbrev-ref", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("detecting current branch: %w", err)
+		}
+		session.BaseBranch = strings.TrimSpace(out)
+	}
+
+	repoRoot, err := gitRun("rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("finding repo root: %w", err)
+	}
+	repoRoot = strings.TrimSpace(repoRoot)
+	if err := excludeDirigentFiles(repoRoot); err != nil {
+		return "", err
+	}
+
+	branchName := "dirigent/" + task.ID
+	worktreePath := filepath.Join(repoRoot, ".dirigent-worktrees", task.ID)
+	if _, err := os.Stat(worktreePath); err != nil {
+		if _, err := gitRun("worktree", "add", "-b", branchName, worktreePath, session.BaseBranch); err != nil {
+			if _, err2 := gitRun("worktree", "add", worktreePath, branchName); err2 != nil {
+				return "", fmt.Errorf("creating worktree: %w", err)
+			}
+		}
+	}
+
+	task.Branch = branchName
+	task.Status = state.StatusInProgress
+	return worktreePath, nil
+}
+
+// excludeDirigentFiles keeps Dirigent's worktrees and session file out of the
+// host repo's status without touching its tracked .gitignore.
+func excludeDirigentFiles(repoRoot string) error {
+	out, err := gitRun("-C", repoRoot, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	excludePath := strings.TrimSpace(out)
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(repoRoot, excludePath)
+	}
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading git exclude: %w", err)
+	}
+	existing := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		existing[strings.TrimSpace(line)] = true
+	}
+	var add strings.Builder
+	for _, entry := range []string{".dirigent-worktrees/", ".dirigent-session.json"} {
+		if !existing[entry] {
+			add.WriteString(entry + "\n")
+		}
+	}
+	if add.Len() == 0 {
+		return nil
+	}
+	prefix := ""
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		prefix = "\n"
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
+		return fmt.Errorf("creating git info dir: %w", err)
+	}
+	if err := os.WriteFile(excludePath, append(data, prefix+add.String()...), 0644); err != nil {
+		return fmt.Errorf("writing git exclude: %w", err)
+	}
+	return nil
+}
+
+// commitWorktree commits any uncommitted agent work so merge never drops it.
+func commitWorktree(worktreePath, taskID string) error {
+	out, err := gitRun("-C", worktreePath, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	if _, err := gitRun("-C", worktreePath, "add", "-A"); err != nil {
+		return err
+	}
+	_, err = gitRun("-C", worktreePath, "commit", "-m", "dirigent task: "+taskID)
+	return err
+}
+
+func spawnPrompt(session *state.Session, task *state.Task) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "You are a Dirigent worker for task %q in the objective: %s\n\n", task.ID, session.Objective)
+	fmt.Fprintf(&sb, "## Task: %s\n%s\n\n", task.Title, task.Description)
+	if len(task.Interfaces) > 0 {
+		fmt.Fprintf(&sb, "Interfaces you own or consume: %s\n\n", strings.Join(task.Interfaces, ", "))
+	}
+	if len(session.Contracts) > 0 {
+		contracts, _ := json.MarshalIndent(session.Contracts, "", "  ")
+		fmt.Fprintf(&sb, "## Shared contracts (code against these, do not change them)\n```json\n%s\n```\n\n", contracts)
+	}
+	fmt.Fprintf(&sb, `## Rules
+- Your working directory is an isolated git worktree. Edit files only inside it.
+- Do not commit, push, or switch branches. Dirigent commits your work on merge.
+- Run the project's tests/lint for what you changed before finishing.
+- When done run: dirigent update %[1]s '{"status":"completed","result":"<one-line summary>","files_modified":[...]}'
+- If you cannot finish run: dirigent update %[1]s '{"status":"failed","result":"<why>"}'
+`, task.ID)
+	return sb.String()
+}
+
+func spawnCmd() *cobra.Command {
+	var model, agent string
+	cmd := &cobra.Command{
+		Use:   "spawn <task-id>",
+		Short: "Check out a task and run a separate headless opencode in its worktree",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+			session, err := state.Load()
+			if err != nil {
+				return fmt.Errorf("loading session: %w", err)
+			}
+			if session.Plan == nil {
+				return fmt.Errorf("no plan exists yet")
+			}
+			task := findTask(session, taskID)
+			if task == nil {
+				return fmt.Errorf("task '%s' not found", taskID)
+			}
+			if task.Status != state.StatusPending && task.Status != state.StatusFailed {
+				return fmt.Errorf("task '%s' is %s, only pending or failed tasks can be spawned", taskID, task.Status)
+			}
+			for _, dep := range task.DependsOn {
+				if d := findTask(session, dep); d == nil || (d.Status != state.StatusCompleted && d.Status != state.StatusVerified) {
+					return fmt.Errorf("task '%s' depends on unfinished task '%s'", taskID, dep)
+				}
+			}
+
+			worktreePath, err := checkoutTask(session, task)
+			if err != nil {
+				return err
+			}
+			sessionFile, err := filepath.Abs(state.SessionFilePath())
+			if err != nil {
+				return fmt.Errorf("resolving session file: %w", err)
+			}
+			logPath := worktreePath + ".log"
+			logFile, err := os.Create(logPath)
+			if err != nil {
+				return fmt.Errorf("creating log: %w", err)
+			}
+			defer logFile.Close()
+
+			ocArgs := []string{"run", "--dir", worktreePath, "--title", "dirigent: " + taskID}
+			if model != "" {
+				ocArgs = append(ocArgs, "--model", model)
+			}
+			if agent != "" {
+				ocArgs = append(ocArgs, "--agent", agent)
+			}
+			ocArgs = append(ocArgs, spawnPrompt(session, task))
+
+			oc := exec.Command("opencode", ocArgs...)
+			oc.Dir = worktreePath
+			oc.Env = append(os.Environ(), state.SessionEnv+"="+sessionFile)
+			oc.Stdout = logFile
+			oc.Stderr = logFile
+			oc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if err := oc.Start(); err != nil {
+				return fmt.Errorf("starting opencode: %w", err)
+			}
+
+			task.PID = oc.Process.Pid
+			task.Log = logPath
+			task.Result = ""
+			if err := state.Save(session); err != nil {
+				return fmt.Errorf("saving session: %w", err)
+			}
+			return jsonOut(map[string]any{
+				"task":     taskID,
+				"worktree": worktreePath,
+				"pid":      task.PID,
+				"log":      logPath,
+				"status":   "spawned",
+			})
+		},
+	}
+	cmd.Flags().StringVar(&model, "model", "", "model for the worker (provider/model)")
+	cmd.Flags().StringVar(&agent, "agent", "", "agent for the worker")
+	return cmd
 }
 
 func gitRun(args ...string) (string, error) {

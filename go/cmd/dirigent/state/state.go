@@ -13,6 +13,10 @@ import (
 
 const defaultSessionFile = ".dirigent-session.json"
 
+// SessionEnv names the environment variable that points spawned agents at the
+// orchestrator's session file, since worktrees have their own repo root.
+const SessionEnv = "DIRIGENT_SESSION"
+
 // SessionFileOverride allows callers to override the session file path.
 // When empty, the default resolution logic is used.
 var SessionFileOverride string
@@ -42,6 +46,8 @@ type Task struct {
 	AssignedAgent string     `json:"assigned_agent,omitempty"`
 	Branch        string     `json:"branch,omitempty"`
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	PID           int        `json:"pid,omitempty"`
+	Log           string     `json:"log,omitempty"`
 }
 
 // Plan holds the decomposed tasks and their dependency graph.
@@ -117,6 +123,9 @@ func SessionFilePath() string {
 func sessionPath() string {
 	if SessionFileOverride != "" {
 		return SessionFileOverride
+	}
+	if env := os.Getenv(SessionEnv); env != "" {
+		return env
 	}
 
 	dir, err := os.Getwd()
